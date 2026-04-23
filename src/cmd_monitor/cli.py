@@ -139,6 +139,7 @@ def hook_handler(ctx: click.Context, event: str) -> None:
             receiver_id=feishu_config.get("receiver_id", ""),
         )
         if auto_replier is not None:
+            # Forward incoming Feishu messages to auto_replier to cancel the timeout
             bot.set_message_callback(lambda msg: auto_replier.on_message(msg.content))
         bot.start()
 
@@ -166,7 +167,8 @@ def hook_handler(ctx: click.Context, event: str) -> None:
 
             success = inject_to_window(target, answer, inject_delay=delay)
             if success:
-                click.echo(f"[自动回复] 已注入: {answer[:50]}")
+                preview = answer[:50] + ("..." if len(answer) > 50 else "")
+                click.echo(f"[自动回复] 已注入: {preview}")
             else:
                 click.echo(f"[自动回复] 注入失败: 未找到窗口 {target}", err=True)
         except Exception as e:
@@ -214,6 +216,7 @@ def copilot_hook_handler(ctx: click.Context, event: str) -> None:
             receiver_id=feishu_config.get("receiver_id", ""),
         )
         if auto_replier is not None:
+            # Forward incoming Feishu messages to auto_replier to cancel the timeout
             bot.set_message_callback(lambda msg: auto_replier.on_message(msg.content))
         bot.start()
 
@@ -241,7 +244,8 @@ def copilot_hook_handler(ctx: click.Context, event: str) -> None:
 
             success = inject_to_window(target, answer, inject_delay=delay)
             if success:
-                click.echo(f"[自动回复] 已注入: {answer[:50]}")
+                preview = answer[:50] + ("..." if len(answer) > 50 else "")
+                click.echo(f"[自动回复] 已注入: {preview}")
             else:
                 click.echo(f"[自动回复] 注入失败: 未找到窗口 {target}", err=True)
         except Exception as e:

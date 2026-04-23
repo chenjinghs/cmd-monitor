@@ -119,19 +119,17 @@ def test_auto_replier_reusable() -> None:
 
 def test_auto_replier_arm_resets_previous_reply() -> None:
     """重新 arm 时清除上次的回复"""
-    ar = AutoReplier(timeout_seconds=5.0, default_answer="default")
+    ar = AutoReplier(timeout_seconds=0.05, default_answer="default")
 
     ar.arm()
     ar.on_message("first reply")
-    ar.wait()
+    result1 = ar.wait()
+    assert result1 == "first reply"
 
-    # 重新 arm 后，旧回复不应影响新的等待
+    # 重新 arm 后，旧回复不应影响新的等待 — 应超时返回默认值
     ar.arm()
-    # 等待超时（不发送新回复）
-    ar2 = AutoReplier(timeout_seconds=0.05, default_answer="default")
-    ar2.arm()
-    result = ar2.wait()
-    assert result == "default"
+    result2 = ar.wait()
+    assert result2 == "default"
 
 
 # --- 并发安全测试 ---

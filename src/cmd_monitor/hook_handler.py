@@ -238,7 +238,9 @@ def handle_hook_event(
     else:
         logger.warning("FeishuBot not available, notification not sent")
 
-    # Arm auto-replier after notification is sent (only for events needing input)
+    # Arm auto-replier after notification is sent.
+    # Only for events that require user input (Notification, PermissionRequest);
+    # StopEvent signals Claude finished, so no pending input is needed.
     if auto_replier is not None and isinstance(event, (NotificationEvent, PermissionRequestEvent)):
         auto_replier.arm()
 
@@ -398,7 +400,8 @@ def handle_copilot_hook_event(
     else:
         logger.warning("FeishuBot not available, notification not sent")
 
-    # Arm auto-replier after notification is sent
+    # Arm auto-replier after notification is sent.
+    # For copilot hooks all events may need a reply, so we arm unconditionally.
     if auto_replier is not None:
         auto_replier.arm()
 
