@@ -202,6 +202,7 @@ def handle_hook_event(
     input_json: str,
     feishu_bot: Any,
     state_manager: Optional[StateManager] = None,
+    auto_replier: Optional[Any] = None,
 ) -> int:
     """处理 Claude Code hook 事件的主入口
 
@@ -209,6 +210,7 @@ def handle_hook_event(
         input_json: 从 stdin 读取的 JSON 字符串
         feishu_bot: FeishuBot 实例（用于发送通知）
         state_manager: 状态管理器（可选，用于通知抑制）
+        auto_replier: 自动回复管理器（可选，超时后注入预设答案）
 
     Returns:
         exit code: 0=allow, 2=block
@@ -235,6 +237,12 @@ def handle_hook_event(
         logger.info("Hook notification sent: %s", title)
     else:
         logger.warning("FeishuBot not available, notification not sent")
+
+    # Arm auto-replier after notification is sent.
+    # Only for events that require user input (Notification, PermissionRequest);
+    # StopEvent signals Claude finished, so no pending input is needed.
+    if auto_replier is not None and isinstance(event, (NotificationEvent, PermissionRequestEvent)):
+        auto_replier.arm()
 
     return 0  # Allow Claude to continue
 
@@ -358,6 +366,7 @@ def handle_copilot_hook_event(
     input_json: str,
     feishu_bot: Any,
     state_manager: Optional[StateManager] = None,
+    auto_replier: Optional[Any] = None,
 ) -> int:
     """处理 copilot-cli hook 事件的主入口
 
@@ -365,6 +374,7 @@ def handle_copilot_hook_event(
         input_json: 从 stdin 读取的 JSON 字符串
         feishu_bot: FeishuBot 实例（用于发送通知）
         state_manager: 状态管理器（可选，用于通知抑制）
+        auto_replier: 自动回复管理器（可选，超时后注入预设答案）
 
     Returns:
         exit code: 0=allow
@@ -389,5 +399,10 @@ def handle_copilot_hook_event(
         logger.info("Copilot hook notification sent: %s", title)
     else:
         logger.warning("FeishuBot not available, notification not sent")
+
+    # Arm auto-replier after notification is sent.
+    # For copilot hooks all events may need a reply, so we arm unconditionally.
+    if auto_replier is not None:
+        auto_replier.arm()
 
     return 0

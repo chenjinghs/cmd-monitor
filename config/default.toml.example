@@ -62,3 +62,12 @@ enabled = true
 config_dir = ".github/hooks"
 # 监听的事件类型
 events = ["sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse"]
+
+[auto_reply]
+# 自动回复配置 — 超时后自动注入预设答案
+# 启用后，hook 事件触发飞书通知时，若超时内未收到飞书回复，将自动注入预设答案
+enabled = false
+# 等待用户飞书回复的最大时间（秒）
+timeout_seconds = 60.0
+# 超时后自动注入的预设答案
+default_answer = "y"
