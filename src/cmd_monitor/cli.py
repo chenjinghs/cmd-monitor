@@ -119,7 +119,18 @@ def hook_handler(ctx: click.Context, event: str) -> None:
         click.echo("No input received", err=True)
         sys.exit(0)
 
-    # Create FeishuBot for sending notifications
+    # Create AutoReplier if configured
+    auto_reply_config = config.get("auto_reply", {})
+    auto_replier = None
+    if auto_reply_config.get("enabled", False):
+        from cmd_monitor.auto_replier import AutoReplier
+
+        auto_replier = AutoReplier(
+            timeout_seconds=float(auto_reply_config.get("timeout_seconds", 60.0)),
+            default_answer=str(auto_reply_config.get("default_answer", "y")),
+        )
+
+    # Create FeishuBot for sending notifications (and receiving replies)
     bot = None
     if feishu_config.get("app_id") and feishu_config.get("app_secret"):
         bot = FeishuBot(
@@ -127,6 +138,8 @@ def hook_handler(ctx: click.Context, event: str) -> None:
             app_secret=feishu_config["app_secret"],
             receiver_id=feishu_config.get("receiver_id", ""),
         )
+        if auto_replier is not None:
+            bot.set_message_callback(lambda msg: auto_replier.on_message(msg.content))
         bot.start()
 
     # Create StateManager for notification dedup
@@ -138,7 +151,26 @@ def hook_handler(ctx: click.Context, event: str) -> None:
         notification_cooldown=float(state_config.get("notification_cooldown", 60.0)),
     )
 
-    exit_code = handle_hook_event(input_json, bot, state_manager=state_manager)
+    exit_code = handle_hook_event(
+        input_json, bot, state_manager=state_manager, auto_replier=auto_replier
+    )
+
+    # Auto-reply: wait for user reply or timeout, then inject the answer
+    if auto_replier is not None and auto_replier.is_armed:
+        answer = auto_replier.wait()
+        inject_config = config.get("inject", {})
+        target = inject_config.get("target_window", "PowerShell")
+        delay = float(inject_config.get("inject_delay", 0.5))
+        try:
+            from cmd_monitor.input_injector import inject_to_window
+
+            success = inject_to_window(target, answer, inject_delay=delay)
+            if success:
+                click.echo(f"[自动回复] 已注入: {answer[:50]}")
+            else:
+                click.echo(f"[自动回复] 注入失败: 未找到窗口 {target}", err=True)
+        except Exception as e:
+            click.echo(f"[自动回复] 注入异常: {e}", err=True)
 
     if bot:
         bot.stop()
@@ -163,6 +195,17 @@ def copilot_hook_handler(ctx: click.Context, event: str) -> None:
         click.echo("No input received", err=True)
         sys.exit(0)
 
+    # Create AutoReplier if configured
+    auto_reply_config = config.get("auto_reply", {})
+    auto_replier = None
+    if auto_reply_config.get("enabled", False):
+        from cmd_monitor.auto_replier import AutoReplier
+
+        auto_replier = AutoReplier(
+            timeout_seconds=float(auto_reply_config.get("timeout_seconds", 60.0)),
+            default_answer=str(auto_reply_config.get("default_answer", "y")),
+        )
+
     bot = None
     if feishu_config.get("app_id") and feishu_config.get("app_secret"):
         bot = FeishuBot(
@@ -170,6 +213,8 @@ def copilot_hook_handler(ctx: click.Context, event: str) -> None:
             app_secret=feishu_config["app_secret"],
             receiver_id=feishu_config.get("receiver_id", ""),
         )
+        if auto_replier is not None:
+            bot.set_message_callback(lambda msg: auto_replier.on_message(msg.content))
         bot.start()
 
     # Create StateManager for notification dedup
@@ -181,7 +226,26 @@ def copilot_hook_handler(ctx: click.Context, event: str) -> None:
         notification_cooldown=float(state_config.get("notification_cooldown", 60.0)),
     )
 
-    exit_code = handle_copilot_hook_event(input_json, bot, state_manager=state_manager)
+    exit_code = handle_copilot_hook_event(
+        input_json, bot, state_manager=state_manager, auto_replier=auto_replier
+    )
+
+    # Auto-reply: wait for user reply or timeout, then inject the answer
+    if auto_replier is not None and auto_replier.is_armed:
+        answer = auto_replier.wait()
+        inject_config = config.get("inject", {})
+        target = inject_config.get("target_window", "PowerShell")
+        delay = float(inject_config.get("inject_delay", 0.5))
+        try:
+            from cmd_monitor.input_injector import inject_to_window
+
+            success = inject_to_window(target, answer, inject_delay=delay)
+            if success:
+                click.echo(f"[自动回复] 已注入: {answer[:50]}")
+            else:
+                click.echo(f"[自动回复] 注入失败: 未找到窗口 {target}", err=True)
+        except Exception as e:
+            click.echo(f"[自动回复] 注入异常: {e}", err=True)
 
     if bot:
         bot.stop()
