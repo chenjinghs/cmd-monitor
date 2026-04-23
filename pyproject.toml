@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cmd-monitor"
+version = "0.1.0"
+description = "Terminal Monitor + IM Bridge: 监控终端状态，通过飞书/微信双向通信"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.1",
+    "lark-oapi>=1.0",
+    "tomli>=2.0;python_version<'3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1,<0.12",
+]
+
+[project.scripts]
+cmd-monitor = "cmd_monitor.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cmd_monitor"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

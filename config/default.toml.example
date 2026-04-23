@@ -1,0 +1,64 @@
+# cmd-monitor 配置文件
+# 复制此文件为 default.toml 并填入实际值
+# cp config/default.toml.example config/default.toml
+
+[general]
+# 守护进程 PID 文件路径
+pid_file = "/tmp/cmd-monitor.pid"
+# 日志文件路径（空则只输出到控制台）
+log_file = ""
+# 日志级别
+log_level = "INFO"
+
+[feishu]
+# 飞书应用凭证（从飞书开放平台获取）
+app_id = ""
+app_secret = ""
+# 接收通知的用户 open_id
+receiver_id = ""
+
+[powershell]
+# PowerShell 监控配置
+enabled = true
+# Transcript 文件路径（空则自动生成）
+transcript_path = ""
+# 空闲检测间隔（秒）
+poll_interval = 5
+# 空闲判定阈值（秒）
+idle_threshold = 10
+# 提示符模式（用于检测空闲）
+prompt_pattern = "PS [A-Z]:\\\\>"
+
+[inject]
+# 指令注入方式: sendkeys 或 namedpipe
+method = "sendkeys"
+# 指令注入目标窗口（空则自动匹配）
+target_window = ""
+# 注入后等待时间（秒）
+inject_delay = 0.5
+
+[hooks]
+# Hook 监控配置
+enabled = true
+
+[state]
+# 防抖窗口（秒）— 短于此时间的空闲不触发通知
+debounce_seconds = 10.0
+# 通知冷却（秒）— 同一状态转换不重复通知的最小间隔
+notification_cooldown = 60.0
+
+[hooks.claude]
+# Claude Code hooks 配置
+enabled = true
+# hook 配置文件路径（.claude/settings.json）
+config_path = ".claude/settings.json"
+# 监听的事件类型
+events = ["Notification", "Stop", "PermissionRequest"]
+
+[hooks.copilot]
+# GitHub Copilot CLI hooks 配置
+enabled = true
+# hook 配置文件路径（.github/hooks/）
+config_dir = ".github/hooks"
+# 监听的事件类型
+events = ["sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse"]
