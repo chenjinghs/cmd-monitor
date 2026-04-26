@@ -22,7 +22,7 @@ def test_build_claude_ipc_event_for_stop() -> None:
     assert "Claude" in p["title"]
 
 
-def test_build_claude_ipc_event_skips_active_stop() -> None:
+def test_build_claude_ipc_event_for_active_stop() -> None:
     raw = json.dumps(
         {
             "session_id": "abc",
@@ -31,7 +31,12 @@ def test_build_claude_ipc_event_skips_active_stop() -> None:
             "stop_hook_active": True,
         }
     )
-    assert build_claude_ipc_event(raw) is None
+    p = build_claude_ipc_event(raw)
+    assert p["type"] == "hook_event"
+    assert p["session_id"] == "abc"
+    assert p["event_name"] == "Stop"
+    assert p["notify_role"] == "waiting"
+    assert "Claude" in p["title"]
 
 
 def test_build_claude_ipc_event_invalid_json() -> None:
@@ -47,15 +52,28 @@ def test_build_copilot_ipc_event_session_start_is_running_role() -> None:
     assert p["session_id"] == "copilot:/x"
 
 
-def test_build_copilot_ipc_event_post_tool_use_is_waiting_role() -> None:
+def test_build_copilot_ipc_event_pre_tool_use_is_running_role() -> None:
     raw = json.dumps(
         {
-            "hook_event_name": "postToolUse",
+            "hook_event_name": "preToolUse",
+            "cwd": "/x",
+            "timestamp": 1,
+            "toolName": "bash",
+            "toolArgs": "echo hi",
+        }
+    )
+    p = build_copilot_ipc_event(raw)
+    assert p["notify_role"] == "running"
+
+
+    raw = json.dumps(
+        {
             "cwd": "/x",
             "timestamp": 1,
             "toolName": "bash",
             "toolResult": "ok",
         }
     )
-    p = build_copilot_ipc_event(raw)
+    p = build_copilot_ipc_event(raw, fallback_event_name="postToolUse")
     assert p["notify_role"] == "waiting"
+    assert p["session_id"] == "copilot:/x"

@@ -149,12 +149,12 @@ enabled = true
 [hooks.claude]
 enabled = true
 config_path = ".claude/settings.json"           # Claude Code hook 配置路径
-events = ["Notification", "Stop", "PermissionRequest"]
+events = ["Notification", "Stop", "PermissionRequest", "AskUserQuestion"]
 
 [hooks.copilot]
 enabled = true
 config_dir = ".github/hooks"                    # copilot-cli hook 配置目录
-events = ["sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse"]
+events = ["sessionStart", "sessionEnd", "userPromptSubmitted", "preToolUse", "postToolUse", "errorOccurred"]
 ```
 
 ### `[state]` — 状态管理
@@ -193,6 +193,8 @@ cmd-monitor hooks install --type copilot
 - 将 PowerShell hook 脚本写入 `.claude/settings.json`（Claude Code）
 - 将 hook 配置写入 `.github/hooks/hooks.json`（copilot-cli）
 - 每个 hook 事件触发时调用 `cmd-monitor hook-handler` 或 `cmd-monitor copilot-hook-handler`
+- Claude 默认安装事件：`Notification`、`Stop`、`PermissionRequest`、`AskUserQuestion`
+- Copilot 默认安装事件：`sessionStart`、`sessionEnd`、`userPromptSubmitted`、`preToolUse`、`postToolUse`、`errorOccurred`
 
 ### 步骤 3：启动守护进程
 

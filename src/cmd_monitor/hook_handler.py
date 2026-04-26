@@ -29,6 +29,7 @@ class NotificationEvent(HookEvent):
     """Notification 事件 — Claude 需要输入/权限"""
 
     message: str = ""
+    final_message: str = ""  # transcript 里最后一条 assistant 消息（上下文）
 
 
 @dataclass
@@ -46,6 +47,16 @@ class PermissionRequestEvent(HookEvent):
     permission_type: str = ""
     tool_name: str = ""
     tool_input: Dict[str, Any] = field(default_factory=dict)
+    final_message: str = ""  # transcript 里最后一条 assistant 消息（上下文）
+
+
+@dataclass
+class AskUserQuestionEvent(HookEvent):
+    """AskUserQuestion 事件 — Claude 主动向用户提问"""
+
+    question: str = ""
+    options: list[Dict[str, Any]] = field(default_factory=list)
+    final_message: str = ""
 
 
 # --- copilot-cli Hook Events ---
@@ -105,13 +116,18 @@ class ErrorOccurredEvent(CopilotHookEvent):
     recoverable: bool = False
 
 
+
 def _read_last_assistant_message(transcript_path: str) -> str:
     """从 transcript 文件读取最后一条 assistant 消息文本。"""
     if not transcript_path:
         return ""
     try:
         import pathlib
-        lines = pathlib.Path(transcript_path).read_text(encoding="utf-8").splitlines()
+        p = pathlib.Path(transcript_path)
+        if not p.exists():
+            return ""
+        text = p.read_text(encoding="utf-8")
+        lines = text.splitlines()
     except Exception:
         return ""
     # Scan lines in reverse; each line is a JSON object
@@ -128,7 +144,6 @@ def _read_last_assistant_message(transcript_path: str) -> str:
             continue
         content = obj.get("content") or obj.get("message") or obj.get("text") or ""
         if isinstance(content, list):
-            # content may be a list of blocks [{type:"text", text:"..."}]
             parts = [
                 block.get("text", "") for block in content
                 if isinstance(block, dict) and block.get("type") == "text"
@@ -163,14 +178,20 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
     cwd = data.get("cwd", "")
 
     if event_name == "Notification":
+        final_message = _read_last_assistant_message(data.get("transcript_path", ""))
         return NotificationEvent(
             session_id=session_id,
             cwd=cwd,
             hook_event_name=event_name,
             message=data.get("message", ""),
+            final_message=final_message,
         )
     elif event_name == "Stop":
-        final_message = _read_last_assistant_message(data.get("transcript_path", ""))
+        # Claude Code 直接在 payload 里提供 last_assistant_message
+        final_message = data.get("last_assistant_message", "") or ""
+        if not final_message:
+            # 兜底：读 transcript 文件
+            final_message = _read_last_assistant_message(data.get("transcript_path", ""))
         return StopEvent(
             session_id=session_id,
             cwd=cwd,
@@ -182,6 +203,7 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
         tool_input = data.get("tool_input")
         if not isinstance(tool_input, dict):
             tool_input = {}
+        final_message = _read_last_assistant_message(data.get("transcript_path", ""))
         return PermissionRequestEvent(
             session_id=session_id,
             cwd=cwd,
@@ -189,6 +211,45 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
             permission_type=data.get("permission_type", ""),
             tool_name=data.get("tool_name", ""),
             tool_input=tool_input,
+            final_message=final_message,
+        )
+    elif event_name == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
+        tool_input = data.get("tool_input")
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+        raw_questions = tool_input.get("questions")
+        first_question = raw_questions[0] if isinstance(raw_questions, list) and raw_questions else {}
+        if not isinstance(first_question, dict):
+            first_question = {}
+        raw_options = first_question.get("options")
+        options = raw_options if isinstance(raw_options, list) else []
+        final_message = _read_last_assistant_message(data.get("transcript_path", ""))
+        question = (
+            first_question.get("question", "")
+            or data.get("question", "")
+            or data.get("prompt", "")
+            or data.get("message", "")
+        )
+        return AskUserQuestionEvent(
+            session_id=session_id,
+            cwd=cwd,
+            hook_event_name="AskUserQuestion",
+            question=question,
+            options=options,
+            final_message=final_message,
+        )
+    elif event_name == "AskUserQuestion":
+        raw_options = data.get("options")
+        options = raw_options if isinstance(raw_options, list) else []
+        final_message = _read_last_assistant_message(data.get("transcript_path", ""))
+        question = data.get("question", "") or data.get("prompt", "") or data.get("message", "")
+        return AskUserQuestionEvent(
+            session_id=session_id,
+            cwd=cwd,
+            hook_event_name=event_name,
+            question=question,
+            options=options,
+            final_message=final_message,
         )
     else:
         logger.warning("Unknown hook event: %s", event_name)
@@ -206,18 +267,24 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
     """
     if isinstance(event, NotificationEvent):
         title = "Claude Code — 需要输入"
+        msg_snippet = ""
+        if event.final_message:
+            snippet = event.final_message[:200]
+            if len(event.final_message) > 200:
+                snippet += "…"
+            msg_snippet = f"\n**上下文**: {snippet}"
         content = (
-            f"**消息**: {event.message}\n"
+            f"**消息**: {event.message}{msg_snippet}\n"
             f"**目录**: {event.cwd}\n"
             f"**会话**: {event.session_id[:8]}"
         )
     elif isinstance(event, StopEvent):
         title = "Claude Code — 已停止"
-        # 截取最后一条消息前 200 字符，避免卡片过长
+        # 截取最后一条消息前 400 字符，避免卡片过长
         msg_snippet = ""
         if event.final_message:
-            snippet = event.final_message[:200]
-            if len(event.final_message) > 200:
+            snippet = event.final_message[:400]
+            if len(event.final_message) > 400:
                 snippet += "…"
             msg_snippet = f"\n**结尾消息**: {snippet}"
         content = (
@@ -227,9 +294,34 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
         )
     elif isinstance(event, PermissionRequestEvent):
         title = "Claude Code — 权限请求"
+        msg_snippet = ""
+        if event.final_message:
+            snippet = event.final_message[:200]
+            if len(event.final_message) > 200:
+                snippet += "…"
+            msg_snippet = f"\n**上下文**: {snippet}"
         content = (
             f"**类型**: {event.permission_type}\n"
-            f"**工具**: {event.tool_name}\n"
+            f"**工具**: {event.tool_name}{msg_snippet}\n"
+            f"**目录**: {event.cwd}\n"
+            f"**会话**: {event.session_id[:8]}"
+        )
+    elif isinstance(event, AskUserQuestionEvent):
+        title = "Claude Code — 需要回答"
+        msg_snippet = ""
+        if event.final_message:
+            snippet = event.final_message[:200]
+            if len(event.final_message) > 200:
+                snippet += "…"
+            msg_snippet = f"\n**上下文**: {snippet}"
+        option_labels = [
+            option.get("label", "")
+            for option in event.options
+            if isinstance(option, dict) and option.get("label")
+        ]
+        options_line = f"\n**选项**: {' / '.join(option_labels)}" if option_labels else ""
+        content = (
+            f"**问题**: {event.question}{options_line}{msg_snippet}\n"
             f"**目录**: {event.cwd}\n"
             f"**会话**: {event.session_id[:8]}"
         )
@@ -263,11 +355,6 @@ def handle_hook_event(
     if event is None:
         return 0  # Parse failure — allow Claude to continue
 
-    # Skip if stop_hook_active (Claude already handling)
-    if isinstance(event, StopEvent) and event.stop_hook_active:
-        logger.info("Stop hook already active, skipping notification")
-        return 0
-
     # State management: check if notification should be sent
     if state_manager is not None:
         should_notify = state_manager.transition(SessionState.WAITING)
@@ -299,7 +386,10 @@ COPILOT_HOOK_EVENTS = [
 ]
 
 
-def parse_copilot_hook_input(input_json: str) -> Optional[CopilotHookEvent]:
+def parse_copilot_hook_input(
+    input_json: str,
+    fallback_event_name: str = "",
+) -> Optional[CopilotHookEvent]:
     """解析 copilot-cli hook 的 stdin JSON 输入
 
     Args:
@@ -318,7 +408,7 @@ def parse_copilot_hook_input(input_json: str) -> Optional[CopilotHookEvent]:
         logger.error("Copilot hook input is not a JSON object")
         return None
 
-    event_name = data.get("hook_event_name", "")
+    event_name = data.get("hook_event_name") or fallback_event_name
     cwd = data.get("cwd", "")
     timestamp = data.get("timestamp", 0)
 
@@ -383,22 +473,23 @@ def format_copilot_notification(event: CopilotHookEvent) -> tuple[str, str]:
         title = "Copilot CLI — 工具调用"
         content = (
             f"**工具**: {event.tool_name}\n"
-            f"**参数**: {event.tool_args[:100]}\n"
+            f"**参数**: {event.tool_args[:200]}\n"
             f"**目录**: {event.cwd}"
         )
     elif isinstance(event, PostToolUseEvent):
         title = "Copilot CLI — 工具完成"
         content = (
             f"**工具**: {event.tool_name}\n"
-            f"**结果**: {event.tool_result[:100]}\n"
+            f"**结果**: {event.tool_result[:200]}\n"
             f"**目录**: {event.cwd}"
         )
     elif isinstance(event, ErrorOccurredEvent):
         title = "Copilot CLI — 错误"
         content = (
-            f"**错误**: {event.error[:100]}\n"
+            f"**错误**: {event.error[:200]}\n"
             f"**上下文**: {event.error_context}\n"
-            f"**可恢复**: {event.recoverable}"
+            f"**可恢复**: {event.recoverable}\n"
+            f"**目录**: {event.cwd}"
         )
     else:
         title = "Copilot CLI — 未知事件"
@@ -411,6 +502,7 @@ def handle_copilot_hook_event(
     feishu_bot: Any,
     state_manager: Optional[StateManager] = None,
     auto_replier: Optional[Any] = None,
+    fallback_event_name: str = "",
 ) -> int:
     """处理 copilot-cli hook 事件的主入口
 
@@ -423,15 +515,15 @@ def handle_copilot_hook_event(
     Returns:
         exit code: 0=allow
     """
-    event = parse_copilot_hook_input(input_json)
+    event = parse_copilot_hook_input(input_json, fallback_event_name=fallback_event_name)
     if event is None:
         return 0
 
     # State management: session-start/prompt → RUNNING, others → check WAITING
     if state_manager is not None:
-        if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent)):
+        if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent, PreToolUseEvent)):
             state_manager.transition(SessionState.RUNNING)
-        elif isinstance(event, (PostToolUseEvent, ErrorOccurredEvent)):
+        elif isinstance(event, (SessionEndEvent, PostToolUseEvent, ErrorOccurredEvent)):
             should_notify = state_manager.transition(SessionState.WAITING)
             if not should_notify:
                 logger.info("Copilot notification suppressed by state manager")
@@ -444,9 +536,7 @@ def handle_copilot_hook_event(
     else:
         logger.warning("FeishuBot not available, notification not sent")
 
-    # Arm auto-replier after notification is sent.
-    # For copilot hooks all events may need a reply, so we arm unconditionally.
-    if auto_replier is not None:
+    if auto_replier is not None and isinstance(event, (SessionEndEvent, PostToolUseEvent, ErrorOccurredEvent)):
         auto_replier.arm()
 
     return 0
@@ -463,9 +553,10 @@ def build_claude_ipc_event(input_json: str) -> Optional[Dict[str, Any]]:
     event = parse_hook_input(input_json)
     if event is None:
         return None
-    if isinstance(event, StopEvent) and event.stop_hook_active:
-        return None
     title, content = format_notification(event)
+    notify_role = "waiting"
+    if isinstance(event, AskUserQuestionEvent):
+        notify_role = "waiting_after_running"
     return {
         "type": "hook_event",
         "session_id": event.session_id,
@@ -473,20 +564,23 @@ def build_claude_ipc_event(input_json: str) -> Optional[Dict[str, Any]]:
         "event_name": event.hook_event_name,
         "title": title,
         "content": content,
-        "notify_role": "waiting",
+        "notify_role": notify_role,
     }
 
 
-def build_copilot_ipc_event(input_json: str) -> Optional[Dict[str, Any]]:
+def build_copilot_ipc_event(
+    input_json: str,
+    fallback_event_name: str = "",
+) -> Optional[Dict[str, Any]]:
     """copilot-cli hook stdin JSON → IPC payload。"""
-    event = parse_copilot_hook_input(input_json)
+    event = parse_copilot_hook_input(input_json, fallback_event_name=fallback_event_name)
     if event is None:
         return None
 
     # Map event class to notify_role for daemon-side state machine
-    if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent)):
+    if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent, PreToolUseEvent)):
         role = "running"
-    elif isinstance(event, (PostToolUseEvent, ErrorOccurredEvent)):
+    elif isinstance(event, (SessionEndEvent, PostToolUseEvent, ErrorOccurredEvent)):
         role = "waiting"
     else:
         role = "skip"

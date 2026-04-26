@@ -120,18 +120,85 @@ def status(ctx: click.Context) -> None:
         click.echo(f"daemon 运行中 (pid={pid}), 但 IPC 不可达")
 
 
+@main.command()
+@click.pass_context
+def doctor(ctx: click.Context) -> None:
+    """自检基础链路状态"""
+    from cmd_monitor.daemon import is_alive, read_pid
+    from cmd_monitor.hook_installer import (
+        claude_hooks_are_configured,
+        copilot_hooks_are_configured,
+    )
+    from cmd_monitor.ipc import send_event
+
+    config = ctx.obj["config"]
+    pid_file = _get_pid_file(config)
+    pid = read_pid(pid_file) if pid_file else None
+    daemon_alive = pid is not None and is_alive(pid)
+
+    if daemon_alive:
+        click.echo(f"[ok] daemon alive (pid={pid})")
+    else:
+        pid_hint = str(pid_file) if pid_file else "pid file not configured"
+        click.echo(f"[fail] daemon not running ({pid_hint})")
+
+    ipc_ok = False
+    if daemon_alive:
+        resp = send_event({"type": "status"})
+        ipc_ok = bool(resp and resp.get("ok"))
+
+    if ipc_ok:
+        click.echo("[ok] IPC reachable")
+    else:
+        click.echo("[fail] IPC unreachable")
+
+    claude_config = config.get("hooks", {}).get("claude", {})
+    claude_enabled = bool(claude_config.get("enabled", True))
+    claude_ok = True
+    if claude_enabled:
+        claude_ok = claude_hooks_are_configured(
+            config_path=claude_config.get("config_path"),
+            events=claude_config.get("events"),
+        )
+        if claude_ok:
+            click.echo("[ok] Claude hooks configured")
+        else:
+            click.echo("[fail] Claude hooks not configured")
+    else:
+        click.echo("[ok] Claude hooks disabled")
+
+    copilot_config = config.get("hooks", {}).get("copilot", {})
+    copilot_enabled = bool(copilot_config.get("enabled", True))
+    copilot_ok = True
+    if copilot_enabled:
+        copilot_ok = copilot_hooks_are_configured(
+            config_dir=copilot_config.get("config_dir"),
+            events=copilot_config.get("events"),
+        )
+        if copilot_ok:
+            click.echo("[ok] Copilot hooks configured")
+        else:
+            click.echo("[fail] Copilot hooks not configured")
+    else:
+        click.echo("[ok] Copilot hooks disabled")
+
+    if not all((daemon_alive, ipc_ok, claude_ok, copilot_ok)):
+        sys.exit(1)
+
+
 @main.command("hook-handler")
 @click.option(
     "--event",
     required=True,
-    help="Hook event name (Notification, Stop, PermissionRequest)",
+    help="Hook event name (Notification, Stop, PermissionRequest, AskUserQuestion, PreToolUse)",
 )
 @click.pass_context
 def hook_handler(ctx: click.Context, event: str) -> None:
     """处理 Claude Code hook 事件（内部命令）"""
     from cmd_monitor.hook_handler import build_claude_ipc_event
 
-    input_json = sys.stdin.read().strip()
+    import io
+    input_json = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8").read().strip()
     if not input_json:
         click.echo("No input received", err=True)
         sys.exit(0)
@@ -161,7 +228,7 @@ def copilot_hook_handler(ctx: click.Context, event: str) -> None:
         click.echo("No input received", err=True)
         sys.exit(0)
 
-    payload = build_copilot_ipc_event(input_json)
+    payload = build_copilot_ipc_event(input_json, fallback_event_name=event)
     if payload is None:
         sys.exit(0)
 

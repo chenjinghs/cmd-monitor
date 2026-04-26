@@ -17,6 +17,9 @@ import subprocess
 import time
 from typing import Optional
 
+import ctypes
+import ctypes.wintypes
+
 from cmd_monitor.input_injector import (
     find_first_window,
     force_foreground,
@@ -24,21 +27,102 @@ from cmd_monitor.input_injector import (
 )
 from cmd_monitor.session_registry import SessionInfo
 
+_user32 = ctypes.windll.user32
+_user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
+_user32.GetWindowRect.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.RECT)]
+_user32.GetWindowRect.restype = ctypes.wintypes.BOOL
+_user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+_user32.SetCursorPos.restype = ctypes.wintypes.BOOL
+
+# SendInput structs for mouse
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_ABSOLUTE = 0x8000
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.wintypes.DWORD),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("time", ctypes.wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+class _INPUT_UNION2(ctypes.Union):
+    _fields_ = [("mi", MOUSEINPUT)]
+
+class MOUSE_INPUT(ctypes.Structure):
+    _fields_ = [("type", ctypes.wintypes.DWORD), ("union", _INPUT_UNION2)]
+
+
+def _click_window_center(hwnd: int) -> None:
+    """在窗口中心模拟鼠标左键点击，使 WT 的 terminal pane 获得键盘焦点。"""
+    rect = ctypes.wintypes.RECT()
+    if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return
+    cx = (rect.left + rect.right) // 2
+    cy = (rect.top + rect.bottom) // 2
+    # 把坐标转换为 SendInput 需要的 0-65535 绝对坐标
+    sm_cx = _user32.GetSystemMetrics(0)  # screen width
+    sm_cy = _user32.GetSystemMetrics(1)  # screen height
+    abs_x = (cx * 65535) // (sm_cx - 1) if sm_cx > 1 else cx
+    abs_y = (cy * 65535) // (sm_cy - 1) if sm_cy > 1 else cy
+
+    inputs = (MOUSE_INPUT * 2)()
+    # move to center
+    inputs[0].type = 0  # INPUT_MOUSE
+    inputs[0].union.mi.dx = abs_x
+    inputs[0].union.mi.dy = abs_y
+    inputs[0].union.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
+    # left click
+    inputs[1].type = 0
+    inputs[1].union.mi.dx = abs_x
+    inputs[1].union.mi.dy = abs_y
+    inputs[1].union.mi.dwFlags = MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE
+
+    _user32.SendInput(2, inputs, ctypes.sizeof(MOUSE_INPUT))
+    time.sleep(0.05)
+
+    up = (MOUSE_INPUT * 1)()
+    up[0].type = 0
+    up[0].union.mi.dx = abs_x
+    up[0].union.mi.dy = abs_y
+    up[0].union.mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE
+    _user32.SendInput(1, up, ctypes.sizeof(MOUSE_INPUT))
+    time.sleep(0.1)
+
 logger = logging.getLogger(__name__)
 
-WT_FOCUS_GRACE_SECONDS = 0.15
+WT_FOCUS_GRACE_SECONDS = 0.4  # wt focus-tab 是异步的，需要等待 WT 内部切换完成
+
+
+def _find_wt_exe() -> Optional[str]:
+    """查找 wt.exe，先查 PATH，再查 WindowsApps 目录。"""
+    found = shutil.which("wt.exe") or shutil.which("wt")
+    if found:
+        return found
+    import os
+    candidate = os.path.join(
+        os.environ.get("LOCALAPPDATA", ""),
+        "Microsoft", "WindowsApps", "wt.exe",
+    )
+    if os.path.exists(candidate):
+        return candidate
+    return None
 
 
 def _focus_wt_tab(window_id: int, tab_index: int) -> bool:
     """调用 wt.exe --window <id> focus-tab --target <idx>。"""
     if tab_index < 0:
         return False
-    wt_exe = shutil.which("wt.exe") or shutil.which("wt")
+    wt_exe = _find_wt_exe()
     if not wt_exe:
-        logger.debug("wt.exe not found in PATH, skip tab focus")
+        logger.debug("wt.exe not found, skip tab focus")
         return False
     try:
-        subprocess.run(
+        result = subprocess.run(
             [
                 wt_exe,
                 "--window",
@@ -49,7 +133,11 @@ def _focus_wt_tab(window_id: int, tab_index: int) -> bool:
             ],
             check=False,
             timeout=3.0,
+            capture_output=True,
         )
+        logger.info("wt focus-tab window=%s tab=%s rc=%s", window_id, tab_index, result.returncode)
+        if result.stderr:
+            logger.debug("wt stderr: %s", result.stderr.decode(errors="replace"))
         time.sleep(WT_FOCUS_GRACE_SECONDS)
         return True
     except (subprocess.SubprocessError, OSError) as e:
@@ -77,12 +165,33 @@ def inject_to_session(
     if not text:
         return False
 
+    logger.info(
+        "inject_to_session: session=%s wt_session=%r wt_hwnd=%s tab_idx=%s window_hwnd=%s",
+        info.session_id[:8],
+        bool(info.wt_session),
+        info.wt_window_hwnd,
+        info.wt_tab_index,
+        info.window_hwnd,
+    )
+
     # 优先 WT 多 tab 路径
     if info.wt_session and info.wt_window_hwnd:
+        tab_switched = False
         if info.wt_tab_index >= 0:
-            _focus_wt_tab(info.wt_window_id, info.wt_tab_index)
+            tab_switched = _focus_wt_tab(info.wt_window_id, info.wt_tab_index)
+        else:
+            logger.warning(
+                "wt_tab_index=-1 for session %s — cannot switch tab, will inject to current foreground tab",
+                info.session_id[:8],
+            )
         force_foreground(info.wt_window_hwnd)
-        return inject_text(info.wt_window_hwnd, text, inject_delay=inject_delay)
+        # WT 切 tab 后用鼠标点击确保 terminal pane 获得键盘焦点
+        time.sleep(0.3)
+        _click_window_center(info.wt_window_hwnd)
+        fg = _user32.GetForegroundWindow()
+        logger.info("Injecting to wt_window_hwnd=%s (tab_switched=%s, fg_now=%s, fg_is_wt=%s)",
+                    info.wt_window_hwnd, tab_switched, fg, fg == info.wt_window_hwnd)
+        return inject_text(info.wt_window_hwnd, text, inject_delay=inject_delay, skip_foreground=True)
 
     # 独立 conhost 窗口
     if info.window_hwnd:

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from cmd_monitor.hook_handler import (
+    AskUserQuestionEvent,
     ErrorOccurredEvent,
     HookEvent,
     NotificationEvent,
@@ -96,6 +97,50 @@ def test_parse_permission_request_missing_tool_input() -> None:
     assert event.tool_input == {}
 
 
+def test_parse_ask_user_question_event() -> None:
+    data = {
+        "session_id": "sess_ask",
+        "cwd": "/workspace",
+        "hook_event_name": "AskUserQuestion",
+        "question": "下一步做什么？",
+        "options": [
+            {"label": "查日志"},
+            {"label": "继续测试"},
+        ],
+    }
+    event = parse_hook_input(json.dumps(data))
+    assert isinstance(event, AskUserQuestionEvent)
+    assert event.question == "下一步做什么？"
+    assert event.options == [
+        {"label": "查日志"},
+        {"label": "继续测试"},
+    ]
+
+
+def test_parse_pre_tool_use_ask_user_question_event() -> None:
+    data = {
+        "session_id": "sess_pre_ask",
+        "cwd": "/workspace",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {
+            "questions": [
+                {
+                    "question": "下一步做什么？",
+                    "options": [{"label": "查日志"}, {"label": "继续测试"}],
+                }
+            ]
+        },
+    }
+    event = parse_hook_input(json.dumps(data))
+    assert isinstance(event, AskUserQuestionEvent)
+    assert event.question == "下一步做什么？"
+    assert event.options == [
+        {"label": "查日志"},
+        {"label": "继续测试"},
+    ]
+
+
 def test_parse_invalid_json() -> None:
     result = parse_hook_input("not json{{{")
     assert result is None
@@ -128,6 +173,19 @@ def test_parse_missing_event_name() -> None:
     }
     result = parse_hook_input(json.dumps(data))
     assert result is None
+
+
+def test_parse_copilot_post_tool_use_uses_cli_event_name_fallback() -> None:
+    data = {
+        "cwd": "/project",
+        "timestamp": 1,
+        "toolName": "bash",
+        "toolResult": "ok",
+    }
+    event = parse_copilot_hook_input(json.dumps(data), fallback_event_name="postToolUse")
+    assert isinstance(event, PostToolUseEvent)
+    assert event.tool_name == "bash"
+    assert event.tool_result == "ok"
 
 
 # --- format_notification tests ---
@@ -176,18 +234,47 @@ def test_format_permission_request_event() -> None:
     assert "/code" in content
 
 
-def test_format_unknown_event() -> None:
-    event = HookEvent(
-        session_id="sess_unknown",
-        cwd="/dir",
-        hook_event_name="CustomEvent",
+def test_format_ask_user_question_event() -> None:
+    event = AskUserQuestionEvent(
+        session_id="sess_ask1234",
+        cwd="/code",
+        hook_event_name="AskUserQuestion",
+        question="下一步做什么？",
+        options=[{"label": "查日志"}, {"label": "继续测试"}],
     )
     title, content = format_notification(event)
-    assert "未知事件" in title
-    assert "CustomEvent" in content
+    assert "需要回答" in title
+    assert "下一步做什么？" in content
+    assert "查日志" in content
+    assert "继续测试" in content
+    assert "/code" in content
 
 
-# --- handle_hook_event tests ---
+def test_copilot_format_post_tool_use_has_more_context() -> None:
+    event = PostToolUseEvent(cwd="/code", tool_name="edit", tool_result="x" * 150)
+    title, content = format_copilot_notification(event)
+    assert "工具完成" in title
+    assert "/code" in content
+    assert "edit" in content
+    assert "x" * 120 in content
+
+
+def test_format_stop_event_uses_400_char_snippet() -> None:
+    final_message = "a" * 500
+    event = StopEvent(
+        session_id="sess_abcdefgh",
+        cwd="/workspace",
+        hook_event_name="Stop",
+        stop_hook_active=False,
+        final_message=final_message,
+    )
+    title, content = format_notification(event)
+    assert "已停止" in title
+    assert "a" * 400 in content
+    assert "a" * 401 not in content
+    assert "…" in content
+
+
 
 
 def test_handle_notification_sends_card() -> None:
@@ -218,7 +305,7 @@ def test_handle_stop_sends_card() -> None:
     bot.send_card.assert_called_once()
 
 
-def test_handle_stop_active_skips() -> None:
+def test_handle_stop_active_sends_card() -> None:
     bot = MagicMock()
     input_json = json.dumps({
         "session_id": "sess_789",
@@ -228,7 +315,7 @@ def test_handle_stop_active_skips() -> None:
     })
     exit_code = handle_hook_event(input_json, bot)
     assert exit_code == 0
-    bot.send_card.assert_not_called()
+    bot.send_card.assert_called_once()
 
 
 def test_handle_permission_request_sends_card() -> None:
@@ -247,6 +334,61 @@ def test_handle_permission_request_sends_card() -> None:
     title, content = bot.send_card.call_args[0]
     assert "权限请求" in title
     assert "bash" in content
+
+
+def test_handle_ask_user_question_sends_card() -> None:
+    bot = MagicMock()
+    input_json = json.dumps({
+        "session_id": "sess_ask",
+        "cwd": "/workspace",
+        "hook_event_name": "AskUserQuestion",
+        "question": "下一步做什么？",
+        "options": [{"label": "查日志"}, {"label": "继续测试"}],
+    })
+    exit_code = handle_hook_event(input_json, bot)
+    assert exit_code == 0
+    bot.send_card.assert_called_once()
+    title, content = bot.send_card.call_args[0]
+    assert "需要回答" in title
+    assert "下一步做什么？" in content
+
+
+def test_handle_pre_tool_use_ask_user_question_sends_card() -> None:
+    bot = MagicMock()
+    input_json = json.dumps({
+        "session_id": "sess_pre_ask",
+        "cwd": "/workspace",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {
+            "questions": [
+                {
+                    "question": "下一步做什么？",
+                    "options": [{"label": "查日志"}, {"label": "继续测试"}],
+                }
+            ]
+        },
+    })
+    exit_code = handle_hook_event(input_json, bot)
+    assert exit_code == 0
+    bot.send_card.assert_called_once()
+    title, content = bot.send_card.call_args[0]
+    assert "需要回答" in title
+    assert "下一步做什么？" in content
+
+
+def test_handle_pre_tool_use_non_ask_user_question_skips() -> None:
+    bot = MagicMock()
+    input_json = json.dumps({
+        "session_id": "sess_pre_other",
+        "cwd": "/workspace",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "pwd"},
+    })
+    exit_code = handle_hook_event(input_json, bot)
+    assert exit_code == 0
+    bot.send_card.assert_not_called()
 
 
 def test_handle_invalid_input_returns_zero() -> None:
@@ -421,17 +563,29 @@ def test_copilot_handle_pre_tool_use_sends_card() -> None:
     bot.send_card.assert_called_once()
 
 
-def test_copilot_handle_invalid_input_returns_zero() -> None:
+def test_copilot_handle_pre_tool_use_does_not_arm_auto_reply() -> None:
     bot = MagicMock()
-    exit_code = handle_copilot_hook_event("not json", bot)
-    assert exit_code == 0
-    bot.send_card.assert_not_called()
-
-
-def test_copilot_handle_no_bot_returns_zero() -> None:
+    auto_replier = MagicMock()
     input_json = json.dumps({
-        "hook_event_name": "sessionStart",
+        "hook_event_name": "preToolUse",
         "cwd": "/project",
+        "toolName": "bash",
+        "toolArgs": "echo hello",
     })
-    exit_code = handle_copilot_hook_event(input_json, None)
+    exit_code = handle_copilot_hook_event(input_json, bot, auto_replier=auto_replier)
     assert exit_code == 0
+    auto_replier.arm.assert_not_called()
+
+
+def test_copilot_handle_post_tool_use_arms_auto_reply() -> None:
+    bot = MagicMock()
+    auto_replier = MagicMock()
+    input_json = json.dumps({
+        "hook_event_name": "postToolUse",
+        "cwd": "/project",
+        "toolName": "bash",
+        "toolResult": "done",
+    })
+    exit_code = handle_copilot_hook_event(input_json, bot, auto_replier=auto_replier)
+    assert exit_code == 0
+    auto_replier.arm.assert_called_once()

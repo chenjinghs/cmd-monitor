@@ -1,8 +1,20 @@
 """CLI 测试"""
 
+from pathlib import Path
+from unittest.mock import patch
+
 from click.testing import CliRunner
 
 from cmd_monitor.cli import main
+
+
+DEFAULT_CONFIG = {
+    "general": {"pid_file": "cmd-monitor.pid"},
+    "hooks": {
+        "claude": {"config_path": ".claude/settings.json"},
+        "copilot": {"config_dir": ".github/hooks"},
+    },
+}
 
 
 def test_cli_help() -> None:
@@ -33,11 +45,19 @@ def test_status_help() -> None:
     assert "查看运行状态" in result.output
 
 
+def test_doctor_help() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["doctor", "--help"])
+    assert result.exit_code == 0
+    assert "自检" in result.output
+
+
 def test_hook_handler_help() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["hook-handler", "--help"])
     assert result.exit_code == 0
     assert "--event" in result.output
+    assert "AskUserQuestion" in result.output
 
 
 def test_hooks_install_help() -> None:
@@ -54,3 +74,55 @@ def test_copilot_hook_handler_help() -> None:
     assert result.exit_code == 0
     assert "--event" in result.output
     assert "sessionStart" in result.output
+
+
+def test_doctor_reports_all_checks_happy_path() -> None:
+    runner = CliRunner()
+    with patch("cmd_monitor.cli.load_config", return_value=DEFAULT_CONFIG), patch(
+        "cmd_monitor.daemon.read_pid", return_value=43324
+    ), patch("cmd_monitor.daemon.is_alive", return_value=True), patch(
+        "cmd_monitor.ipc.send_event",
+        return_value={"ok": True},
+    ), patch(
+        "cmd_monitor.hook_installer.claude_hooks_are_configured",
+        return_value=True,
+    ), patch(
+        "cmd_monitor.hook_installer.copilot_hooks_are_configured",
+        return_value=True,
+    ):
+        result = runner.invoke(main, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "[ok] daemon alive (pid=43324)" in result.output
+    assert "[ok] IPC reachable" in result.output
+    assert "[ok] Claude hooks configured" in result.output
+    assert "[ok] Copilot hooks configured" in result.output
+
+
+def test_doctor_reports_disabled_hook_as_ok() -> None:
+    runner = CliRunner()
+    config = {
+        "general": {"pid_file": "cmd-monitor.pid"},
+        "hooks": {
+            "claude": {"enabled": True, "config_path": ".claude/settings.json"},
+            "copilot": {"enabled": False, "config_dir": ".github/hooks"},
+        },
+    }
+    with patch("cmd_monitor.cli.load_config", return_value=config), patch(
+        "cmd_monitor.daemon.read_pid", return_value=43324
+    ), patch("cmd_monitor.daemon.is_alive", return_value=True), patch(
+        "cmd_monitor.ipc.send_event",
+        return_value={"ok": True},
+    ), patch(
+        "cmd_monitor.hook_installer.claude_hooks_are_configured",
+        return_value=True,
+    ), patch(
+        "cmd_monitor.hook_installer.copilot_hooks_are_configured"
+    ) as copilot_mock:
+        result = runner.invoke(main, ["doctor"])
+
+    copilot_mock.assert_not_called()
+    assert result.exit_code == 0
+    assert "[ok] Claude hooks configured" in result.output
+    assert "[ok] Copilot hooks disabled" in result.output
+

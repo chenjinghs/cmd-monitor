@@ -6,11 +6,11 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_HOOK_EVENTS = ["Notification", "Stop", "PermissionRequest"]
+CLAUDE_HOOK_EVENTS = ["Notification", "Stop", "PermissionRequest", "AskUserQuestion", "PreToolUse"]
 
 
 def generate_hook_command(
@@ -42,15 +42,70 @@ def generate_hooks_config(
     Returns:
         hooks 配置字典（包含 "hooks" key）
     """
-    hooks: Dict[str, List[Dict[str, str]]] = {}
+    hooks: Dict[str, List[Dict[str, Any]]] = {}
     for event in events:
         hooks[event] = [
             {
-                "type": "command",
-                "command": generate_hook_command(event, monitor_bin),
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": generate_hook_command(event, monitor_bin),
+                    }
+                ],
             }
         ]
     return {"hooks": hooks}
+
+
+
+
+def _load_json_file(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def claude_hooks_are_configured(
+    config_path: Optional[str] = None,
+    monitor_bin: str = "cmd-monitor",
+    events: Optional[List[str]] = None,
+) -> bool:
+    target = Path(config_path) if config_path else Path(".claude/settings.json")
+    hook_events = events or CLAUDE_HOOK_EVENTS
+    data = _load_json_file(target)
+    if data is None:
+        return False
+
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+
+    for event in hook_events:
+        entries = hooks.get(event)
+        if not isinstance(entries, list) or not entries:
+            return False
+        entry = entries[0]
+        if not isinstance(entry, dict):
+            return False
+        if entry.get("matcher") != "*":
+            return False
+        nested_hooks = entry.get("hooks")
+        if not isinstance(nested_hooks, list) or not nested_hooks:
+            return False
+        hook = nested_hooks[0]
+        if not isinstance(hook, dict):
+            return False
+        if hook.get("type") != "command":
+            return False
+        if hook.get("command") != generate_hook_command(event, monitor_bin):
+            return False
+    return True
 
 
 def install_hooks(
@@ -146,6 +201,39 @@ def generate_copilot_hooks_config(
             }
         ]
     return {"version": 1, "hooks": hooks}
+
+
+def copilot_hooks_are_configured(
+    config_dir: Optional[str] = None,
+    monitor_bin: str = "cmd-monitor",
+    events: Optional[List[str]] = None,
+) -> bool:
+    target_dir = Path(config_dir) if config_dir else Path(".github/hooks")
+    target = target_dir / "hooks.json"
+    hook_events = events or COPILOT_HOOK_EVENTS
+    data = _load_json_file(target)
+    if data is None:
+        return False
+
+    if data.get("version") != 1:
+        return False
+
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+
+    for event in hook_events:
+        entries = hooks.get(event)
+        if not isinstance(entries, list) or not entries:
+            return False
+        entry = entries[0]
+        if not isinstance(entry, dict):
+            return False
+        if entry.get("type") != "command":
+            return False
+        if entry.get("powershell") != generate_copilot_hook_command(event, monitor_bin):
+            return False
+    return True
 
 
 def install_copilot_hooks(

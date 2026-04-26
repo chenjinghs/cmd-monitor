@@ -79,7 +79,8 @@ class KEYBDINPUT(ctypes.Structure):
         ("wScan", ctypes.wintypes.WORD),
         ("dwFlags", ctypes.wintypes.DWORD),
         ("time", ctypes.wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ("dwExtraInfo", ctypes.c_uint64),  # ULONG_PTR as integer (8 bytes on 64-bit)
+        ("_pad", ctypes.c_uint64),          # pad KEYBDINPUT to 32 bytes to match MOUSEINPUT
     ]
 
 
@@ -92,6 +93,9 @@ class INPUT(ctypes.Structure):
         ("type", ctypes.wintypes.DWORD),
         ("union", INPUT_UNION),
     ]
+
+
+assert ctypes.sizeof(INPUT) == 40, f"INPUT struct size mismatch: {ctypes.sizeof(INPUT)} (expected 40)"
 
 
 # --- Window Finding ---
@@ -152,11 +156,8 @@ def find_first_window(title_substr: str) -> Optional[WindowInfo]:
 def force_foreground(hwnd: int) -> bool:
     """强制将窗口带到前台。
 
-    使用多种 fallback 策略,因为 Win10/11 对 SetForegroundWindow 限制较严:
-    1. 校验 hwnd 仍有效
-    2. 还原最小化的窗口
-    3. AttachThreadInput 把当前线程附到目标窗口的 GUI 线程,然后 SetForeground
-    4. 失败再试 Alt-key trick
+    核心技巧: AttachThreadInput 必须附加到【当前前台窗口】的线程,
+    而不是目标窗口的线程,这样才能获得"前台权限"来切换焦点。
     """
     if not hwnd or not user32.IsWindow(hwnd):
         logger.error("hwnd is invalid or no longer exists: %s", hwnd)
@@ -171,25 +172,38 @@ def force_foreground(hwnd: int) -> bool:
     if user32.GetForegroundWindow() == hwnd:
         return True
 
-    # Strategy 1: AttachThreadInput
+    # AllowSetForegroundWindow(ASFW_ANY) — 让本进程获得前台切换权限
+    ASFW_ANY = 0xFFFFFFFF
+    user32.AllowSetForegroundWindow(ASFW_ANY)
+
+    # AttachThreadInput: 附加到【当前前台窗口】的线程,借用其前台权限
+    fg_hwnd = user32.GetForegroundWindow()
     pid_buf = ctypes.wintypes.DWORD()
+    fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, ctypes.byref(pid_buf)) if fg_hwnd else 0
     target_thread = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_buf))
     current_thread = kernel32.GetCurrentThreadId()
-    attached = False
-    if target_thread and target_thread != current_thread:
-        attached = bool(user32.AttachThreadInput(current_thread, target_thread, True))
+
+    attached_fg = False
+    attached_target = False
+    if fg_thread and fg_thread != current_thread:
+        attached_fg = bool(user32.AttachThreadInput(current_thread, fg_thread, True))
+    if target_thread and target_thread != current_thread and target_thread != fg_thread:
+        attached_target = bool(user32.AttachThreadInput(current_thread, target_thread, True))
+
     try:
         user32.BringWindowToTop(hwnd)
         user32.SetForegroundWindow(hwnd)
         user32.SetActiveWindow(hwnd)
-        time.sleep(0.05)
+        time.sleep(0.08)
         if user32.GetForegroundWindow() == hwnd:
             return True
     finally:
-        if attached:
+        if attached_fg:
+            user32.AttachThreadInput(current_thread, fg_thread, False)
+        if attached_target:
             user32.AttachThreadInput(current_thread, target_thread, False)
 
-    # Strategy 2: Alt-key trick (legacy)
+    # Fallback: Alt-key trick
     user32.keybd_event(0x12, 0, 0, 0)  # Alt down
     user32.SetForegroundWindow(hwnd)
     user32.keybd_event(0x12, 0, 0x0002, 0)  # Alt up
@@ -198,8 +212,8 @@ def force_foreground(hwnd: int) -> bool:
     if user32.GetForegroundWindow() == hwnd:
         return True
 
-    logger.error(
-        "Failed to bring window to foreground: hwnd=%s (current foreground=%s)",
+    logger.warning(
+        "force_foreground: SetForegroundWindow failed (hwnd=%s fg=%s), will try PostMessage paste",
         hwnd,
         user32.GetForegroundWindow(),
     )
@@ -247,13 +261,14 @@ def _set_clipboard_text(text: str) -> bool:
         user32.CloseClipboard()
 
 
-def inject_text(hwnd: int, text: str, inject_delay: float = 0.5) -> bool:
+def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground: bool = False) -> bool:
     """将文本注入目标窗口（剪贴板粘贴方式）
 
     Args:
         hwnd: 目标窗口句柄
         text: 要注入的文本
         inject_delay: 注入后等待时间（秒）
+        skip_foreground: 为 True 时跳过 force_foreground（调用方已确保焦点）
 
     Returns:
         是否成功
@@ -262,10 +277,11 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5) -> bool:
         logger.warning("Empty text, skipping injection")
         return False
 
-    # 1. Bring window to foreground
-    if not force_foreground(hwnd):
-        logger.error("Failed to bring window to foreground: hwnd=%s", hwnd)
-        return False
+    # 1. Bring window to foreground (best-effort; daemon may lack foreground permission)
+    if not skip_foreground:
+        fg_ok = force_foreground(hwnd)
+        if not fg_ok:
+            logger.warning("force_foreground failed for hwnd=%s, attempting inject anyway", hwnd)
 
     # 2. Set clipboard
     if not _set_clipboard_text(text):

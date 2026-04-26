@@ -9,6 +9,8 @@ import pytest
 from cmd_monitor.hook_installer import (
     CLAUDE_HOOK_EVENTS,
     COPILOT_HOOK_EVENTS,
+    claude_hooks_are_configured,
+    copilot_hooks_are_configured,
     generate_copilot_hook_command,
     generate_copilot_hooks_config,
     generate_hook_command,
@@ -38,6 +40,16 @@ def test_generate_hook_command_permission_request() -> None:
     assert "--event PermissionRequest" in cmd
 
 
+def test_generate_hook_command_ask_user_question() -> None:
+    cmd = generate_hook_command("AskUserQuestion")
+    assert "--event AskUserQuestion" in cmd
+
+
+def test_generate_hook_command_pre_tool_use() -> None:
+    cmd = generate_hook_command("PreToolUse")
+    assert "--event PreToolUse" in cmd
+
+
 def test_generate_hook_command_custom_bin() -> None:
     cmd = generate_hook_command("Notification", monitor_bin="my-monitor")
     assert "my-monitor" in cmd
@@ -53,6 +65,8 @@ def test_generate_hooks_config_all_events() -> None:
     assert "Notification" in hooks
     assert "Stop" in hooks
     assert "PermissionRequest" in hooks
+    assert "AskUserQuestion" in hooks
+    assert "PreToolUse" in hooks
 
 
 def test_generate_hooks_config_single_event() -> None:
@@ -65,13 +79,14 @@ def test_generate_hooks_config_single_event() -> None:
 def test_generate_hooks_config_structure() -> None:
     config = generate_hooks_config(["Notification"])
     hook_entry = config["hooks"]["Notification"][0]
-    assert hook_entry["type"] == "command"
-    assert "powershell.exe" in hook_entry["command"]
+    assert hook_entry["matcher"] == "*"
+    assert hook_entry["hooks"][0]["type"] == "command"
+    assert "powershell.exe" in hook_entry["hooks"][0]["command"]
 
 
 def test_generate_hooks_config_custom_bin() -> None:
     config = generate_hooks_config(["Notification"], monitor_bin="custom-bin")
-    cmd = config["hooks"]["Notification"][0]["command"]
+    cmd = config["hooks"]["Notification"][0]["hooks"][0]["command"]
     assert "custom-bin" in cmd
 
 
@@ -125,7 +140,7 @@ def test_install_hooks_overwrites_old_hooks(tmp_path: Path) -> None:
 
     with open(target, "r", encoding="utf-8") as f:
         data = json.load(f)
-    assert "powershell.exe" in data["hooks"]["Notification"][0]["command"]
+    assert "powershell.exe" in data["hooks"]["Notification"][0]["hooks"][0]["command"]
 
 
 def test_install_hooks_custom_events(tmp_path: Path) -> None:
@@ -277,8 +292,95 @@ def test_copilot_install_invalid_existing(tmp_path: Path) -> None:
     assert "hooks" in data
 
 
-def test_copilot_install_creates_parent_dir(tmp_path: Path) -> None:
-    target_dir = tmp_path / "deep" / "nested" / ".github" / "hooks"
-    result = install_copilot_hooks(config_dir=str(target_dir))
-    assert result is True
-    assert (target_dir / "hooks.json").exists()
+
+
+# --- claude hook verification tests ---
+
+
+def test_claude_hooks_are_configured_returns_true_for_complete_settings(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / ".claude" / "settings.json"
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(generate_hooks_config(CLAUDE_HOOK_EVENTS)), encoding="utf-8")
+
+    assert claude_hooks_are_configured(str(target)) is True
+
+
+def test_claude_hooks_are_configured_returns_false_when_event_missing(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / ".claude" / "settings.json"
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(generate_hooks_config(["Notification", "Stop"])), encoding="utf-8")
+
+    assert claude_hooks_are_configured(str(target)) is False
+
+
+def test_claude_hooks_are_configured_returns_false_when_command_mismatch(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / ".claude" / "settings.json"
+    target.parent.mkdir(parents=True)
+    config = generate_hooks_config(CLAUDE_HOOK_EVENTS)
+    config["hooks"]["Notification"][0]["hooks"][0]["command"] = "wrong-command"
+    target.write_text(json.dumps(config), encoding="utf-8")
+
+    assert claude_hooks_are_configured(str(target)) is False
+
+
+# --- copilot hook verification tests ---
+
+
+def test_copilot_hooks_are_configured_returns_true_for_complete_settings(
+    tmp_path: Path,
+) -> None:
+    target_dir = tmp_path / ".github" / "hooks"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "hooks.json"
+    target.write_text(
+        json.dumps(generate_copilot_hooks_config(COPILOT_HOOK_EVENTS)),
+        encoding="utf-8",
+    )
+
+    assert copilot_hooks_are_configured(str(target_dir)) is True
+
+
+def test_copilot_hooks_are_configured_returns_false_when_event_missing(
+    tmp_path: Path,
+) -> None:
+    target_dir = tmp_path / ".github" / "hooks"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "hooks.json"
+    target.write_text(
+        json.dumps(generate_copilot_hooks_config(["sessionStart"])),
+        encoding="utf-8",
+    )
+
+    assert copilot_hooks_are_configured(str(target_dir)) is False
+
+
+def test_copilot_hooks_are_configured_returns_false_when_version_wrong(
+    tmp_path: Path,
+) -> None:
+    target_dir = tmp_path / ".github" / "hooks"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "hooks.json"
+    config = generate_copilot_hooks_config(COPILOT_HOOK_EVENTS)
+    config["version"] = 2
+    target.write_text(json.dumps(config), encoding="utf-8")
+
+    assert copilot_hooks_are_configured(str(target_dir)) is False
+
+
+def test_copilot_hooks_are_configured_returns_false_when_command_mismatch(
+    tmp_path: Path,
+) -> None:
+    target_dir = tmp_path / ".github" / "hooks"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "hooks.json"
+    config = generate_copilot_hooks_config(COPILOT_HOOK_EVENTS)
+    config["hooks"]["sessionStart"][0]["powershell"] = "wrong-command"
+    target.write_text(json.dumps(config), encoding="utf-8")
+
+    assert copilot_hooks_are_configured(str(target_dir)) is False

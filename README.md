@@ -17,8 +17,14 @@ cmd-monitor --help
 cmd-monitor start          # 启动守护进程(Ctrl+C 停止)
 cmd-monitor stop           # 通过 PID 文件停止后台 daemon
 cmd-monitor status         # 列出活跃 session 与 token
+cmd-monitor doctor         # 自检 daemon / IPC / Claude / Copilot hooks
 cmd-monitor hooks install  # 安装 Claude Code / Copilot CLI hooks
 ```
+
+支持的 Claude 事件：`Notification`、`Stop`、`PermissionRequest`、`AskUserQuestion`
+
+支持的 Copilot 事件：`sessionStart`、`sessionEnd`、`userPromptSubmitted`、`preToolUse`、`postToolUse`、`errorOccurred`
+
 
 ## 多 tab 工作流程
 

@@ -130,9 +130,34 @@ def test_auto_reply_cancelled_on_user_reply() -> None:
     assert fired == []  # cancel won
 
 
-def test_status_event_returns_session_summary() -> None:
+def test_handle_hook_event_ask_user_question_not_suppressed_while_waiting() -> None:
     d = make_daemon()
-    d._handle_pipe_event({"type": "hook_event", "session_id": "A", "title": "t", "content": "c"})
-    resp = d._handle_pipe_event({"type": "status"})
-    assert resp["ok"] is True
-    assert any(s["session_id"] == "A" for s in resp["sessions"])
+    first = d._handle_pipe_event(
+        {
+            "type": "hook_event",
+            "session_id": "sess-ask",
+            "event_name": "Stop",
+            "title": "Claude Code — 已停止",
+            "content": "完成",
+            "notify_role": "waiting",
+        }
+    )
+    second = d._handle_pipe_event(
+        {
+            "type": "hook_event",
+            "session_id": "sess-ask",
+            "event_name": "AskUserQuestion",
+            "title": "Claude Code — 需要回答",
+            "content": "问题: 继续吗?",
+            "notify_role": "waiting_after_running",
+        }
+    )
+    assert first["notified"] is True
+    assert second["ok"] is True
+    assert second["notified"] is True
+
+
+
+
+
+
