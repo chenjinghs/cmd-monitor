@@ -2,6 +2,23 @@
 
 终端监控 + 飞书双向通信工具。监控 Windows PowerShell 中运行的 AI CLI 工具（Claude Code、GitHub Copilot CLI），在它们停止等待输入时通过飞书发送通知，回复指令后自动注入终端。
 
+**v0.2 新增:** 多 Windows Terminal tab 支持 — 通过 daemon + 短 token 路由,飞书回复能精确送达原始 tab。
+
+## 多 tab 工作方式
+
+1. `cmd-monitor start` 启动唯一的 daemon 进程,持有飞书 WS 长连接;
+2. 每次 hook 触发,短命的 hook handler 进程采集 (session_id, WT_SESSION, tab index, hwnd) → 通过 named pipe (`\\.\pipe\cmd-monitor`) 上报给 daemon;
+3. daemon 为每个 session 分配 4 位 hex token,卡片标题前缀 `[ab12]`;
+4. 用户在飞书回复 `ab12 命令内容` → daemon 解析 token → 查注册表 → `wt.exe focus-tab --target N` 切到对应 tab → 注入。
+
+## 飞书回复格式
+
+- `<token> <内容>` — 路由到指定 session(推荐)
+- `<内容>` — 路由到最近活跃的 session(可在 `state.fallback_to_last_active = false` 关闭)
+
+Token 不区分大小写,token 与内容之间允许空格、Tab、半角/全角冒号(`:` / `：`)。
+
+
 ---
 
 ## 目录

@@ -16,6 +16,51 @@ logger = logging.getLogger(__name__)
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
+# Win32 函数 argtypes/restype 声明 — 否则 64-bit 下 hwnd/handle 会被截断为 c_int
+user32.IsWindow.argtypes = [ctypes.wintypes.HWND]
+user32.IsWindow.restype = ctypes.wintypes.BOOL
+user32.IsIconic.argtypes = [ctypes.wintypes.HWND]
+user32.IsIconic.restype = ctypes.wintypes.BOOL
+user32.IsHungAppWindow.argtypes = [ctypes.wintypes.HWND]
+user32.IsHungAppWindow.restype = ctypes.wintypes.BOOL
+user32.IsWindowVisible.argtypes = [ctypes.wintypes.HWND]
+user32.IsWindowVisible.restype = ctypes.wintypes.BOOL
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
+user32.SetForegroundWindow.argtypes = [ctypes.wintypes.HWND]
+user32.SetForegroundWindow.restype = ctypes.wintypes.BOOL
+user32.SetActiveWindow.argtypes = [ctypes.wintypes.HWND]
+user32.SetActiveWindow.restype = ctypes.wintypes.HWND
+user32.BringWindowToTop.argtypes = [ctypes.wintypes.HWND]
+user32.BringWindowToTop.restype = ctypes.wintypes.BOOL
+user32.ShowWindow.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = ctypes.wintypes.BOOL
+user32.GetWindowThreadProcessId.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
+user32.AttachThreadInput.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.wintypes.BOOL]
+user32.AttachThreadInput.restype = ctypes.wintypes.BOOL
+user32.GetWindowTextLengthW.argtypes = [ctypes.wintypes.HWND]
+user32.GetWindowTextLengthW.restype = ctypes.c_int
+user32.GetWindowTextW.argtypes = [ctypes.wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
+user32.GetWindowTextW.restype = ctypes.c_int
+user32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
+user32.OpenClipboard.restype = ctypes.wintypes.BOOL
+user32.EmptyClipboard.argtypes = []
+user32.EmptyClipboard.restype = ctypes.wintypes.BOOL
+user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+user32.SetClipboardData.restype = ctypes.c_void_p
+user32.CloseClipboard.argtypes = []
+user32.CloseClipboard.restype = ctypes.wintypes.BOOL
+
+kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+kernel32.GlobalAlloc.restype = ctypes.c_void_p
+kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+kernel32.GlobalUnlock.restype = ctypes.wintypes.BOOL
+kernel32.GetCurrentThreadId.argtypes = []
+kernel32.GetCurrentThreadId.restype = ctypes.wintypes.DWORD
+
 # Win32 constants
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
@@ -78,6 +123,8 @@ def find_windows(title_substr: str) -> List[WindowInfo]:
     def _callback(hwnd: int, _: int) -> bool:
         if not user32.IsWindowVisible(hwnd):
             return True
+        if user32.IsHungAppWindow(hwnd):
+            return True
         length = user32.GetWindowTextLengthW(hwnd)
         if length == 0:
             return True
@@ -103,29 +150,60 @@ def find_first_window(title_substr: str) -> Optional[WindowInfo]:
 
 
 def force_foreground(hwnd: int) -> bool:
-    """强制将窗口带到前台
+    """强制将窗口带到前台。
 
-    Args:
-        hwnd: 窗口句柄
-
-    Returns:
-        是否成功
+    使用多种 fallback 策略,因为 Win10/11 对 SetForegroundWindow 限制较严:
+    1. 校验 hwnd 仍有效
+    2. 还原最小化的窗口
+    3. AttachThreadInput 把当前线程附到目标窗口的 GUI 线程,然后 SetForeground
+    4. 失败再试 Alt-key trick
     """
-    # Show if minimized
-    user32.ShowWindow(hwnd, SW_RESTORE)
-    time.sleep(0.05)
+    if not hwnd or not user32.IsWindow(hwnd):
+        logger.error("hwnd is invalid or no longer exists: %s", hwnd)
+        return False
 
-    # Check if already foreground
+    # 还原最小化
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, SW_RESTORE)
+        time.sleep(0.05)
+
+    # Already foreground?
     if user32.GetForegroundWindow() == hwnd:
         return True
 
-    # Alt-key trick to bypass SetForegroundWindow restriction
+    # Strategy 1: AttachThreadInput
+    pid_buf = ctypes.wintypes.DWORD()
+    target_thread = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_buf))
+    current_thread = kernel32.GetCurrentThreadId()
+    attached = False
+    if target_thread and target_thread != current_thread:
+        attached = bool(user32.AttachThreadInput(current_thread, target_thread, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        user32.SetActiveWindow(hwnd)
+        time.sleep(0.05)
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+    finally:
+        if attached:
+            user32.AttachThreadInput(current_thread, target_thread, False)
+
+    # Strategy 2: Alt-key trick (legacy)
     user32.keybd_event(0x12, 0, 0, 0)  # Alt down
     user32.SetForegroundWindow(hwnd)
     user32.keybd_event(0x12, 0, 0x0002, 0)  # Alt up
     time.sleep(0.1)
 
-    return user32.GetForegroundWindow() == hwnd
+    if user32.GetForegroundWindow() == hwnd:
+        return True
+
+    logger.error(
+        "Failed to bring window to foreground: hwnd=%s (current foreground=%s)",
+        hwnd,
+        user32.GetForegroundWindow(),
+    )
+    return False
 
 
 # --- Clipboard + SendInput Paste ---

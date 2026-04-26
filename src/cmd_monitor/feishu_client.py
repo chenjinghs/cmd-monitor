@@ -9,8 +9,9 @@ import json
 import logging
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -88,16 +89,24 @@ def _extract_post_text(content_json: dict) -> str:
 class FeishuBot:
     """飞书机器人客户端，基于 lark-oapi WebSocket 长连接"""
 
-    def __init__(self, app_id: str, app_secret: str, receiver_id: str):
+    def __init__(
+        self,
+        app_id: str,
+        app_secret: str,
+        receiver_id: str,
+        receive_id_type: str = "open_id",
+    ):
         self._app_id = app_id
         self._app_secret = app_secret
         self._receiver_id = receiver_id
+        self._receive_id_type = receive_id_type
         self._client: Any = None
         self._ws_client: Any = None
         self._ws_thread: Optional[threading.Thread] = None
         self._running = False
         self._message_callback: Optional[Callable[[FeishuMessage], None]] = None
-        self._processed_message_ids: Dict[str, None] = {}
+        # FIFO cache (insertion order) — popitem(last=False) evicts oldest.
+        self._processed_message_ids: "OrderedDict[str, None]" = OrderedDict()
 
     def set_message_callback(self, callback: Callable[[FeishuMessage], None]) -> None:
         """设置消息回调函数（用于后续 Phase 注入指令）"""
@@ -174,7 +183,7 @@ class FeishuBot:
 
             request = (
                 CreateMessageRequest.builder()
-                .receive_id_type("open_id")
+                .receive_id_type(self._receive_id_type)
                 .request_body(
                     CreateMessageRequestBody.builder()
                     .receive_id(self._receiver_id)
@@ -222,7 +231,7 @@ class FeishuBot:
 
             request = (
                 CreateMessageRequest.builder()
-                .receive_id_type("open_id")
+                .receive_id_type(self._receive_id_type)
                 .request_body(
                     CreateMessageRequestBody.builder()
                     .receive_id(self._receiver_id)
@@ -266,9 +275,9 @@ class FeishuBot:
                     return
                 self._processed_message_ids[message_id] = None
 
-                # 限制缓存大小
+                # 限制缓存大小（FIFO 淘汰最早的条目）
                 while len(self._processed_message_ids) > 1000:
-                    self._processed_message_ids.popitem()
+                    self._processed_message_ids.popitem(last=False)
 
                 # 解析消息内容
                 content = self._parse_message_content(message)

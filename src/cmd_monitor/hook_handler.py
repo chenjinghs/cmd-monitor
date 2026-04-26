@@ -406,3 +406,61 @@ def handle_copilot_hook_event(
         auto_replier.arm()
 
     return 0
+
+
+# --- IPC payload builders for daemon mode ---
+
+
+def build_claude_ipc_event(input_json: str) -> Optional[Dict[str, Any]]:
+    """把 Claude hook stdin JSON 解析后,转成 daemon 期待的 IPC payload。
+
+    返回 None 表示解析失败 / 应跳过。
+    """
+    event = parse_hook_input(input_json)
+    if event is None:
+        return None
+    if isinstance(event, StopEvent) and event.stop_hook_active:
+        return None
+    title, content = format_notification(event)
+    return {
+        "type": "hook_event",
+        "session_id": event.session_id,
+        "cwd": event.cwd,
+        "event_name": event.hook_event_name,
+        "title": title,
+        "content": content,
+        "notify_role": "waiting",
+    }
+
+
+def build_copilot_ipc_event(input_json: str) -> Optional[Dict[str, Any]]:
+    """copilot-cli hook stdin JSON → IPC payload。"""
+    event = parse_copilot_hook_input(input_json)
+    if event is None:
+        return None
+
+    # Map event class to notify_role for daemon-side state machine
+    if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent)):
+        role = "running"
+    elif isinstance(event, (PostToolUseEvent, ErrorOccurredEvent)):
+        role = "waiting"
+    else:
+        role = "skip"
+
+    title, content = format_copilot_notification(event)
+    # copilot 事件没有 session_id;用 cwd+hook_event_name 派生一个稳定 id,
+    # 让 daemon 能为同一终端的多次事件复用 token。
+    derived_id = (
+        f"copilot:{event.cwd}"
+        if event.cwd
+        else f"copilot:{getattr(event, 'timestamp', '0')}"
+    )
+    return {
+        "type": "hook_event",
+        "session_id": derived_id,
+        "cwd": event.cwd,
+        "event_name": getattr(event, "__class__").__name__,
+        "title": title,
+        "content": content,
+        "notify_role": role,
+    }

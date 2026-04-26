@@ -1,7 +1,9 @@
 """CLI 入口模块"""
 
+import os
 import sys
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 import click
@@ -24,246 +26,197 @@ def main(ctx: click.Context, config: str, log_level: str) -> None:
     setup_logging(log_level)
 
 
+def _get_pid_file(config: dict) -> Optional[Path]:
+    p = config.get("general", {}).get("pid_file", "")
+    return Path(p) if p else None
+
+
 @main.command()
 @click.pass_context
 def start(ctx: click.Context) -> None:
     """启动守护进程"""
-    from cmd_monitor.feishu_client import FeishuBot
-
     config = ctx.obj["config"]
     feishu_config = config.get("feishu", {})
 
     if not feishu_config.get("app_id") or not feishu_config.get("app_secret"):
-        click.echo("错误: 飞书 app_id 或 app_secret 未配置，请编辑 config/default.toml")
+        click.echo("错误: 飞书 app_id 或 app_secret 未配置，请编辑 config/default.toml", err=True)
         return
 
-    bot = FeishuBot(
-        app_id=feishu_config["app_id"],
-        app_secret=feishu_config["app_secret"],
-        receiver_id=feishu_config.get("receiver_id", ""),
-    )
+    # Prevent double-start via PID file
+    pid_file = _get_pid_file(config)
+    if pid_file is not None:
+        from cmd_monitor.daemon import is_alive, read_pid
 
-    # 创建状态管理器
-    from cmd_monitor.state_manager import StateManager
+        existing = read_pid(pid_file)
+        if existing and is_alive(existing):
+            click.echo(f"cmd-monitor 已在运行 (pid={existing})", err=True)
+            sys.exit(1)
 
-    state_config = config.get("state", {})
-    state_manager = StateManager(
-        debounce_seconds=float(state_config.get("debounce_seconds", 10.0)),
-        notification_cooldown=float(state_config.get("notification_cooldown", 60.0)),
-    )
+    try:
+        from cmd_monitor.daemon import Daemon
+    except ImportError as e:
+        click.echo(f"daemon 依赖缺失: {e}", err=True)
+        sys.exit(1)
 
-    # 设置消息回调 — 收到飞书回复后注入终端
-    def on_message(msg: Any) -> None:
-        from cmd_monitor.input_injector import inject_to_window
-        from cmd_monitor.state_manager import SessionState
-
-        click.echo(f"[飞书] {msg.sender_id}: {msg.content}")
-        # 用户回复 → 重置状态为 RUNNING
-        state_manager.transition(SessionState.RUNNING)
-        inject_config = config.get("inject", {})
-        method = inject_config.get("method", "sendkeys")
-        target = inject_config.get("target_window", "PowerShell")
-        delay = float(inject_config.get("inject_delay", 0.5))
-
-        if method == "sendkeys":
-            success = inject_to_window(target, msg.content, inject_delay=delay)
-            if success:
-                click.echo(f"[注入] 已发送到 {target}")
-            else:
-                click.echo(f"[注入] 发送失败: 未找到窗口 {target}", err=True)
-
-    bot.set_message_callback(on_message)
-
-    if bot.start():
-        click.echo("cmd-monitor 已启动，按 Ctrl+C 停止")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            bot.stop()
-            click.echo("cmd-monitor 已停止")
-    else:
-        click.echo("启动失败，请检查配置和网络连接")
+    daemon = Daemon(config)
+    click.echo("cmd-monitor 已启动，按 Ctrl+C 停止")
+    try:
+        sys.exit(daemon.run())
+    except KeyboardInterrupt:
+        daemon.stop()
+        click.echo("cmd-monitor 已停止")
 
 
 @main.command()
 @click.pass_context
 def stop(ctx: click.Context) -> None:
     """停止守护进程"""
-    click.echo("Stopping cmd-monitor daemon...")
-    # Phase 2+ 实现
+    from cmd_monitor.daemon import is_alive, read_pid, terminate
+
+    config = ctx.obj["config"]
+    pid_file = _get_pid_file(config)
+    if pid_file is None:
+        click.echo("未配置 pid_file，无法定位 daemon", err=True)
+        sys.exit(1)
+    pid = read_pid(pid_file)
+    if pid is None or not is_alive(pid):
+        click.echo("daemon 未运行")
+        return
+    if terminate(pid):
+        click.echo(f"已终止 daemon (pid={pid})")
+        try:
+            pid_file.unlink()
+        except OSError:
+            pass
+    else:
+        click.echo(f"终止失败 (pid={pid})", err=True)
+        sys.exit(1)
 
 
 @main.command()
 @click.pass_context
 def status(ctx: click.Context) -> None:
     """查看运行状态"""
-    click.echo("cmd-monitor status: not implemented")
-    # Phase 2+ 实现
+    from cmd_monitor.daemon import is_alive, read_pid
+    from cmd_monitor.ipc import send_event
+
+    config = ctx.obj["config"]
+    pid_file = _get_pid_file(config)
+    pid = read_pid(pid_file) if pid_file else None
+    if pid is None or not is_alive(pid):
+        click.echo("daemon 未运行")
+        return
+    resp = send_event({"type": "status"})
+    if resp and resp.get("ok"):
+        sessions = resp.get("sessions", [])
+        tokens = {t["session_id"]: t["token"] for t in resp.get("tokens", [])}
+        click.echo(f"daemon 运行中 (pid={pid}), 活跃 session: {len(sessions)}")
+        for s in sessions:
+            sid = s["session_id"]
+            click.echo(
+                f"  [{tokens.get(sid, '----')}] {sid[:12]}  cwd={s['cwd']}  tab={s['tab']}"
+            )
+    else:
+        click.echo(f"daemon 运行中 (pid={pid}), 但 IPC 不可达")
 
 
 @main.command("hook-handler")
-@click.option("--event", required=True, help="Hook event name (Notification, Stop, PermissionRequest)")
+@click.option(
+    "--event",
+    required=True,
+    help="Hook event name (Notification, Stop, PermissionRequest)",
+)
 @click.pass_context
 def hook_handler(ctx: click.Context, event: str) -> None:
     """处理 Claude Code hook 事件（内部命令）"""
-    from cmd_monitor.feishu_client import FeishuBot
-    from cmd_monitor.hook_handler import handle_hook_event
+    from cmd_monitor.hook_handler import build_claude_ipc_event
 
-    config = ctx.obj["config"]
-    feishu_config = config.get("feishu", {})
-
-    # Read stdin (Claude Code sends JSON via stdin)
     input_json = sys.stdin.read().strip()
     if not input_json:
         click.echo("No input received", err=True)
         sys.exit(0)
 
-    # Create AutoReplier if configured
-    auto_reply_config = config.get("auto_reply", {})
-    auto_replier = None
-    if auto_reply_config.get("enabled", False):
-        from cmd_monitor.auto_replier import AutoReplier
+    payload = build_claude_ipc_event(input_json)
+    if payload is None:
+        sys.exit(0)
 
-        auto_replier = AutoReplier(
-            timeout_seconds=float(auto_reply_config.get("timeout_seconds", 60.0)),
-            default_answer=str(auto_reply_config.get("default_answer", "y")),
-        )
-
-    # Create FeishuBot for sending notifications (and receiving replies)
-    bot = None
-    if feishu_config.get("app_id") and feishu_config.get("app_secret"):
-        bot = FeishuBot(
-            app_id=feishu_config["app_id"],
-            app_secret=feishu_config["app_secret"],
-            receiver_id=feishu_config.get("receiver_id", ""),
-        )
-        if auto_replier is not None:
-            # Forward incoming Feishu messages to auto_replier to cancel the timeout
-            bot.set_message_callback(lambda msg: auto_replier.on_message(msg.content))
-        bot.start()
-
-    # Create StateManager for notification dedup
-    from cmd_monitor.state_manager import StateManager
-
-    state_config = config.get("state", {})
-    state_manager = StateManager(
-        debounce_seconds=float(state_config.get("debounce_seconds", 10.0)),
-        notification_cooldown=float(state_config.get("notification_cooldown", 60.0)),
-    )
-
-    exit_code = handle_hook_event(
-        input_json, bot, state_manager=state_manager, auto_replier=auto_replier
-    )
-
-    # Auto-reply: wait for user reply or timeout, then inject the answer
-    if auto_replier is not None and auto_replier.is_armed:
-        answer = auto_replier.wait()
-        inject_config = config.get("inject", {})
-        target = inject_config.get("target_window", "PowerShell")
-        delay = float(inject_config.get("inject_delay", 0.5))
-        try:
-            from cmd_monitor.input_injector import inject_to_window
-
-            success = inject_to_window(target, answer, inject_delay=delay)
-            if success:
-                preview = answer[:50] + ("..." if len(answer) > 50 else "")
-                click.echo(f"[自动回复] 已注入: {preview}")
-            else:
-                click.echo(f"[自动回复] 注入失败: 未找到窗口 {target}", err=True)
-        except Exception as e:
-            click.echo(f"[自动回复] 注入异常: {e}", err=True)
-
-    if bot:
-        bot.stop()
-
-    sys.exit(exit_code)
+    _augment_with_terminal_context(payload)
+    _send_to_daemon(payload)
+    sys.exit(0)
 
 
 @main.command("copilot-hook-handler")
-@click.option("--event", required=True,
-    help="Hook event (sessionStart, sessionEnd, userPromptSubmitted, preToolUse, postToolUse, errorOccurred)")
+@click.option(
+    "--event",
+    required=True,
+    help="Hook event (sessionStart, sessionEnd, userPromptSubmitted, preToolUse, postToolUse, errorOccurred)",
+)
 @click.pass_context
 def copilot_hook_handler(ctx: click.Context, event: str) -> None:
     """处理 copilot-cli hook 事件（内部命令）"""
-    from cmd_monitor.feishu_client import FeishuBot
-    from cmd_monitor.hook_handler import handle_copilot_hook_event
-
-    config = ctx.obj["config"]
-    feishu_config = config.get("feishu", {})
+    from cmd_monitor.hook_handler import build_copilot_ipc_event
 
     input_json = sys.stdin.read().strip()
     if not input_json:
         click.echo("No input received", err=True)
         sys.exit(0)
 
-    # Create AutoReplier if configured
-    auto_reply_config = config.get("auto_reply", {})
-    auto_replier = None
-    if auto_reply_config.get("enabled", False):
-        from cmd_monitor.auto_replier import AutoReplier
+    payload = build_copilot_ipc_event(input_json)
+    if payload is None:
+        sys.exit(0)
 
-        auto_replier = AutoReplier(
-            timeout_seconds=float(auto_reply_config.get("timeout_seconds", 60.0)),
-            default_answer=str(auto_reply_config.get("default_answer", "y")),
-        )
+    _augment_with_terminal_context(payload)
+    _send_to_daemon(payload)
+    sys.exit(0)
 
-    bot = None
-    if feishu_config.get("app_id") and feishu_config.get("app_secret"):
-        bot = FeishuBot(
-            app_id=feishu_config["app_id"],
-            app_secret=feishu_config["app_secret"],
-            receiver_id=feishu_config.get("receiver_id", ""),
-        )
-        if auto_replier is not None:
-            # Forward incoming Feishu messages to auto_replier to cancel the timeout
-            bot.set_message_callback(lambda msg: auto_replier.on_message(msg.content))
-        bot.start()
 
-    # Create StateManager for notification dedup
-    from cmd_monitor.state_manager import StateManager
+def _augment_with_terminal_context(payload: dict) -> None:
+    """采集 WT 上下文并注入到 payload(失败软退化)。"""
+    try:
+        from cmd_monitor.windows_term import collect_terminal_context
 
-    state_config = config.get("state", {})
-    state_manager = StateManager(
-        debounce_seconds=float(state_config.get("debounce_seconds", 10.0)),
-        notification_cooldown=float(state_config.get("notification_cooldown", 60.0)),
-    )
+        ctx = collect_terminal_context()
+        payload.setdefault("wt_session", ctx.wt_session)
+        payload.setdefault("wt_window_id", ctx.wt_window_id)
+        payload.setdefault("wt_tab_index", ctx.wt_tab_index)
+        payload.setdefault("wt_window_hwnd", ctx.wt_window_hwnd)
+        payload.setdefault("window_hwnd", ctx.window_hwnd)
+    except Exception as e:
+        # 不影响 hook 主流程
+        click.echo(f"[warn] terminal context detection failed: {e}", err=True)
 
-    exit_code = handle_copilot_hook_event(
-        input_json, bot, state_manager=state_manager, auto_replier=auto_replier
-    )
 
-    # Auto-reply: wait for user reply or timeout, then inject the answer
-    if auto_replier is not None and auto_replier.is_armed:
-        answer = auto_replier.wait()
-        inject_config = config.get("inject", {})
-        target = inject_config.get("target_window", "PowerShell")
-        delay = float(inject_config.get("inject_delay", 0.5))
-        try:
-            from cmd_monitor.input_injector import inject_to_window
+def _send_to_daemon(payload: dict) -> None:
+    try:
+        from cmd_monitor.ipc import send_event
 
-            success = inject_to_window(target, answer, inject_delay=delay)
-            if success:
-                preview = answer[:50] + ("..." if len(answer) > 50 else "")
-                click.echo(f"[自动回复] 已注入: {preview}")
-            else:
-                click.echo(f"[自动回复] 注入失败: 未找到窗口 {target}", err=True)
-        except Exception as e:
-            click.echo(f"[自动回复] 注入异常: {e}", err=True)
-
-    if bot:
-        bot.stop()
-
-    sys.exit(exit_code)
+        resp = send_event(payload, timeout_ms=2000)
+        if resp is None:
+            click.echo(
+                "[warn] daemon 未运行或 IPC 不可达;事件未送达",
+                err=True,
+            )
+    except Exception as e:
+        click.echo(f"[warn] IPC error: {e}", err=True)
 
 
 @main.command("hooks")
 @click.argument("action", type=click.Choice(["install"]))
 @click.option("--config-path", default=None, help="配置文件路径")
-@click.option("--type", "hook_type", type=click.Choice(["claude", "copilot", "all"]),
-    default="all", help="安装哪种 hooks")
+@click.option(
+    "--type",
+    "hook_type",
+    type=click.Choice(["claude", "copilot", "all"]),
+    default="all",
+    help="安装哪种 hooks",
+)
 @click.pass_context
-def hooks(ctx: click.Context, action: str, config_path: Optional[str], hook_type: str) -> None:
+def hooks(
+    ctx: click.Context,
+    action: str,
+    config_path: Optional[str],
+    hook_type: str,
+) -> None:
     """管理 hooks"""
     from cmd_monitor.hook_installer import install_copilot_hooks, install_hooks
 
@@ -307,7 +260,6 @@ def monitor(ctx: click.Context, transcript: Optional[str]) -> None:
         )
         return
 
-    # Create FeishuBot
     bot = None
     if feishu_config.get("app_id") and feishu_config.get("app_secret"):
         from cmd_monitor.feishu_client import FeishuBot
@@ -316,10 +268,10 @@ def monitor(ctx: click.Context, transcript: Optional[str]) -> None:
             app_id=feishu_config["app_id"],
             app_secret=feishu_config["app_secret"],
             receiver_id=feishu_config.get("receiver_id", ""),
+            receive_id_type=feishu_config.get("receive_id_type", "open_id"),
         )
         bot.start()
 
-    # Create StateManager
     from cmd_monitor.state_manager import StateManager
 
     state_config = config.get("state", {})
@@ -333,8 +285,8 @@ def monitor(ctx: click.Context, transcript: Optional[str]) -> None:
         poll_interval=float(ps_config.get("poll_interval", 5)),
         idle_threshold=float(ps_config.get("idle_threshold", 10)),
         feishu_bot=bot,
-        debounce_seconds=state_manager._debounce_seconds,
-        notification_cooldown=state_manager._notification_cooldown,
+        debounce_seconds=state_manager.debounce_seconds,
+        notification_cooldown=state_manager.notification_cooldown,
     )
 
     click.echo(f"正在监控: {transcript_path}")

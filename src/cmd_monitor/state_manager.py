@@ -60,17 +60,27 @@ class StateManager:
         """当前状态快照（只读）"""
         return self._state
 
+    @property
+    def debounce_seconds(self) -> float:
+        """防抖窗口（秒，只读）"""
+        return self._debounce_seconds
+
+    @property
+    def notification_cooldown(self) -> float:
+        """通知冷却（秒，只读）"""
+        return self._notification_cooldown
+
     def transition(self, new_state: SessionState, now: Optional[float] = None) -> bool:
         """尝试状态转换，返回是否应发送通知
 
         Args:
             new_state: 目标状态
-            now: 当前时间戳（None 则使用 time.time()）
+            now: 当前单调时间戳（None 则使用 time.monotonic()）
 
         Returns:
             True 表示应发送通知，False 表示应抑制
         """
-        now = now or time.time()
+        now = now if now is not None else time.monotonic()
         current = self._state
 
         # 相同状态 — 检查防抖
@@ -139,13 +149,16 @@ class StateManager:
             return False
 
         # 其他转换：直接执行
+        notify = False
+        if new_state == SessionState.WAITING and self._should_send_notification(now):
+            notify = True
         self._state = StateInfo(
             state=new_state,
             last_state_change=now,
-            last_notification_time=current.last_notification_time,
-            last_notification_state=current.last_notification_state,
+            last_notification_time=now if notify else current.last_notification_time,
+            last_notification_state=SessionState.WAITING if notify else current.last_notification_state,
         )
-        return False
+        return notify
 
     def should_notify(self, now: Optional[float] = None) -> bool:
         """检查当前状态是否应发送通知（用于 hook 事件）
@@ -156,7 +169,7 @@ class StateManager:
         Returns:
             True 表示应发送通知
         """
-        now = now or time.time()
+        now = now if now is not None else time.monotonic()
         if self._state.state != SessionState.WAITING:
             return False
         return self._should_send_notification(now)
@@ -194,3 +207,71 @@ class StateManager:
             return True
         elapsed = now - self._state.last_notification_time
         return elapsed >= self._notification_cooldown
+
+
+class PerSessionStateManager:
+    """Per-session 状态管理器 — 每个 session_id 持有独立的 StateManager。
+
+    用于 daemon,多个 PowerShell tab/CLI 实例之间状态完全隔离。
+    线程安全。
+    """
+
+    def __init__(
+        self,
+        debounce_seconds: float = 10.0,
+        notification_cooldown: float = 60.0,
+    ) -> None:
+        import threading
+
+        self._debounce_seconds = debounce_seconds
+        self._notification_cooldown = notification_cooldown
+        self._managers: dict[str, StateManager] = {}
+        self._lock = threading.RLock()
+
+    @property
+    def debounce_seconds(self) -> float:
+        return self._debounce_seconds
+
+    @property
+    def notification_cooldown(self) -> float:
+        return self._notification_cooldown
+
+    def _get_or_create(self, session_id: str) -> StateManager:
+        with self._lock:
+            mgr = self._managers.get(session_id)
+            if mgr is None:
+                mgr = StateManager(
+                    debounce_seconds=self._debounce_seconds,
+                    notification_cooldown=self._notification_cooldown,
+                )
+                self._managers[session_id] = mgr
+            return mgr
+
+    def transition(
+        self,
+        session_id: str,
+        new_state: SessionState,
+        now: Optional[float] = None,
+    ) -> bool:
+        """对指定 session 执行状态转换,返回是否应发送通知。"""
+        return self._get_or_create(session_id).transition(new_state, now=now)
+
+    def state(self, session_id: str) -> SessionState:
+        with self._lock:
+            mgr = self._managers.get(session_id)
+        return mgr.state if mgr is not None else SessionState.RUNNING
+
+    def reset(self, session_id: str) -> None:
+        with self._lock:
+            mgr = self._managers.get(session_id)
+        if mgr is not None:
+            mgr.reset()
+
+    def remove(self, session_id: str) -> None:
+        """移除某个 session 的状态(session 关闭/过期时调用)。"""
+        with self._lock:
+            self._managers.pop(session_id, None)
+
+    def session_ids(self) -> list[str]:
+        with self._lock:
+            return list(self._managers.keys())
