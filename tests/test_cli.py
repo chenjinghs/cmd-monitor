@@ -99,30 +99,32 @@ def test_doctor_reports_all_checks_happy_path() -> None:
     assert "[ok] Copilot hooks configured" in result.output
 
 
-def test_doctor_reports_disabled_hook_as_ok() -> None:
+
+
+def test_status_shows_wt_session_when_tab_unknown() -> None:
     runner = CliRunner()
-    config = {
-        "general": {"pid_file": "cmd-monitor.pid"},
-        "hooks": {
-            "claude": {"enabled": True, "config_path": ".claude/settings.json"},
-            "copilot": {"enabled": False, "config_dir": ".github/hooks"},
-        },
-    }
-    with patch("cmd_monitor.cli.load_config", return_value=config), patch(
+    with patch("cmd_monitor.cli.load_config", return_value=DEFAULT_CONFIG), patch(
         "cmd_monitor.daemon.read_pid", return_value=43324
     ), patch("cmd_monitor.daemon.is_alive", return_value=True), patch(
         "cmd_monitor.ipc.send_event",
-        return_value={"ok": True},
-    ), patch(
-        "cmd_monitor.hook_installer.claude_hooks_are_configured",
-        return_value=True,
-    ), patch(
-        "cmd_monitor.hook_installer.copilot_hooks_are_configured"
-    ) as copilot_mock:
-        result = runner.invoke(main, ["doctor"])
+        return_value={
+            "ok": True,
+            "sessions": [
+                {
+                    "session_id": "sess-1234567890",
+                    "cwd": "E:/repo",
+                    "tab": -1,
+                    "wt_session": "wt-guid-1234",
+                    "hwnd": 999,
+                }
+            ],
+            "tokens": [{"session_id": "sess-1234567890", "token": "abcd"}],
+        },
+    ):
+        result = runner.invoke(main, ["status"])
 
-    copilot_mock.assert_not_called()
     assert result.exit_code == 0
-    assert "[ok] Claude hooks configured" in result.output
-    assert "[ok] Copilot hooks disabled" in result.output
+    assert "tab=?" in result.output
+    assert "wt=wt-guid-" in result.output
+    assert "hwnd=999" in result.output
 

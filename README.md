@@ -23,6 +23,8 @@ cmd-monitor hooks install  # 安装 Claude Code / Copilot CLI hooks
 
 支持的 Claude 事件：`Notification`、`Stop`、`PermissionRequest`、`AskUserQuestion`
 
+实测说明：普通文本追问/澄清在当前环境下通常只会落到 `Stop`，不会稳定触发 `Notification`；目前稳定观测到并可依赖的等待类事件是 `AskUserQuestion`、`PermissionRequest`，以及结束态的 `Stop`。
+
 支持的 Copilot 事件：`sessionStart`、`sessionEnd`、`userPromptSubmitted`、`preToolUse`、`postToolUse`、`errorOccurred`
 
 

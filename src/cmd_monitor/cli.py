@@ -113,8 +113,17 @@ def status(ctx: click.Context) -> None:
         click.echo(f"daemon 运行中 (pid={pid}), 活跃 session: {len(sessions)}")
         for s in sessions:
             sid = s["session_id"]
+            tab = s.get("tab", -1)
+            tab_text = str(tab) if isinstance(tab, int) and tab >= 0 else "?"
+            extra = ""
+            if tab_text == "?":
+                wt_session = s.get("wt_session", "")
+                hwnd = s.get("hwnd", 0)
+                wt_part = f"  wt={wt_session[:8]}" if wt_session else ""
+                hwnd_part = f"  hwnd={hwnd}" if hwnd else ""
+                extra = f"{wt_part}{hwnd_part}"
             click.echo(
-                f"  [{tokens.get(sid, '----')}] {sid[:12]}  cwd={s['cwd']}  tab={s['tab']}"
+                f"  [{tokens.get(sid, '----')}] {sid[:12]}  cwd={s['cwd']}  tab={tab_text}{extra}"
             )
     else:
         click.echo(f"daemon 运行中 (pid={pid}), 但 IPC 不可达")

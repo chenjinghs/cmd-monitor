@@ -305,8 +305,8 @@ def collect_terminal_context() -> TerminalContext:
     wt_pid = _find_wt_window_pid()
     wt_hwnd = _hwnd_from_pid(wt_pid) if wt_pid else (_find_wt_via_toolhelp() if wt_session else 0)
     tab_idx = _find_my_tab_index(wt_pid) if wt_pid else -1
-    if tab_idx < 0 and wt_pid:
-        tab_idx = _find_selected_tab_index(wt_pid)
+    # 不再回退到“当前选中的 tab”。该值只能代表前台焦点，不能安全代表当前 session 所属 tab，
+    # 多 tab 场景下会把不同 session 误记到同一个 tab。
     # 没有 WT 时退回到当前控制台窗口
     fallback_hwnd = 0
     if not wt_hwnd:

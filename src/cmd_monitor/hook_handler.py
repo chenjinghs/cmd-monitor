@@ -108,6 +108,15 @@ class PostToolUseEvent(CopilotHookEvent):
 
 
 @dataclass
+class CopilotAskUserQuestionEvent(CopilotHookEvent):
+    """Copilot ask-user 事件 — Copilot 主动向用户提问"""
+
+    question: str = ""
+    options: list[Dict[str, Any]] = field(default_factory=list)
+    source_event_name: str = ""
+
+
+@dataclass
 class ErrorOccurredEvent(CopilotHookEvent):
     """errorOccurred 事件 — 错误发生"""
 
@@ -115,6 +124,69 @@ class ErrorOccurredEvent(CopilotHookEvent):
     error_context: str = ""
     recoverable: bool = False
 
+
+
+def _extract_copilot_question_from_text(text: str) -> tuple[str, list[Dict[str, Any]]]:
+    """从 copilot tool 文本负载中提取 ask-user 问题与选项。"""
+    if not text:
+        return "", []
+
+    candidates: list[Any] = [text]
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if parsed is not None:
+        candidates.append(parsed)
+
+    def _from_obj(obj: Any) -> tuple[str, list[Dict[str, Any]]]:
+        if isinstance(obj, dict):
+            tool_name = str(obj.get("toolName") or obj.get("tool_name") or "")
+            if tool_name.lower() in {"askuserquestion", "ask-user", "ask_user_question", "ask_user"}:
+                question = str(
+                    obj.get("question")
+                    or obj.get("prompt")
+                    or obj.get("message")
+                    or ""
+                )
+                raw_options = obj.get("options")
+                options = raw_options if isinstance(raw_options, list) else []
+                if question:
+                    return question, options
+
+            raw_questions = obj.get("questions")
+            if isinstance(raw_questions, list) and raw_questions:
+                first_question = raw_questions[0]
+                if isinstance(first_question, dict):
+                    question = str(first_question.get("question") or "")
+                    raw_options = first_question.get("options")
+                    options = raw_options if isinstance(raw_options, list) else []
+                    if question:
+                        return question, options
+
+            question = str(obj.get("question") or obj.get("prompt") or obj.get("message") or "")
+            raw_options = obj.get("options")
+            options = raw_options if isinstance(raw_options, list) else []
+            if question and (options or any(k in obj for k in ("questions", "toolName", "tool_name"))):
+                return question, options
+
+            for key in ("toolArgs", "tool_args", "toolResult", "tool_result", "input", "result", "payload"):
+                nested = obj.get(key)
+                if isinstance(nested, str):
+                    nested_question, nested_options = _extract_copilot_question_from_text(nested)
+                    if nested_question:
+                        return nested_question, nested_options
+                elif isinstance(nested, dict):
+                    nested_question, nested_options = _from_obj(nested)
+                    if nested_question:
+                        return nested_question, nested_options
+        return "", []
+
+    for candidate in candidates:
+        question, options = _from_obj(candidate)
+        if question:
+            return question, options
+    return "", []
 
 
 def _read_last_assistant_message(transcript_path: str) -> str:
@@ -130,7 +202,6 @@ def _read_last_assistant_message(transcript_path: str) -> str:
         lines = text.splitlines()
     except Exception:
         return ""
-    # Scan lines in reverse; each line is a JSON object
     for line in reversed(lines):
         line = line.strip()
         if not line:
@@ -187,10 +258,8 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
             final_message=final_message,
         )
     elif event_name == "Stop":
-        # Claude Code 直接在 payload 里提供 last_assistant_message
         final_message = data.get("last_assistant_message", "") or ""
         if not final_message:
-            # 兜底：读 transcript 文件
             final_message = _read_last_assistant_message(data.get("transcript_path", ""))
         return StopEvent(
             session_id=session_id,
@@ -223,7 +292,9 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
             first_question = {}
         raw_options = first_question.get("options")
         options = raw_options if isinstance(raw_options, list) else []
-        final_message = _read_last_assistant_message(data.get("transcript_path", ""))
+        final_message = data.get("last_assistant_message", "") or ""
+        if not final_message:
+            final_message = _read_last_assistant_message(data.get("transcript_path", ""))
         question = (
             first_question.get("question", "")
             or data.get("question", "")
@@ -241,7 +312,9 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
     elif event_name == "AskUserQuestion":
         raw_options = data.get("options")
         options = raw_options if isinstance(raw_options, list) else []
-        final_message = _read_last_assistant_message(data.get("transcript_path", ""))
+        final_message = data.get("last_assistant_message", "") or ""
+        if not final_message:
+            final_message = _read_last_assistant_message(data.get("transcript_path", ""))
         question = data.get("question", "") or data.get("prompt", "") or data.get("message", "")
         return AskUserQuestionEvent(
             session_id=session_id,
@@ -313,7 +386,7 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
             snippet = event.final_message[:200]
             if len(event.final_message) > 200:
                 snippet += "…"
-            msg_snippet = f"\n**上下文**: {snippet}"
+            msg_snippet = f"\n**结尾消息**: {snippet}"
         option_labels = [
             option.get("label", "")
             for option in event.options
@@ -370,9 +443,9 @@ def handle_hook_event(
         logger.warning("FeishuBot not available, notification not sent")
 
     # Arm auto-replier after notification is sent.
-    # Only for events that require user input (Notification, PermissionRequest);
+    # Only for events that require user input (Notification, PermissionRequest, AskUserQuestion);
     # StopEvent signals Claude finished, so no pending input is needed.
-    if auto_replier is not None and isinstance(event, (NotificationEvent, PermissionRequestEvent)):
+    if auto_replier is not None and isinstance(event, (NotificationEvent, PermissionRequestEvent, AskUserQuestionEvent)):
         auto_replier.arm()
 
     return 0  # Allow Claude to continue
@@ -384,6 +457,26 @@ COPILOT_HOOK_EVENTS = [
     "sessionStart", "sessionEnd", "userPromptSubmitted",
     "preToolUse", "postToolUse", "errorOccurred",
 ]
+
+
+def _parse_copilot_ask_user_event(
+    event_name: str,
+    cwd: str,
+    timestamp: int,
+    tool_name: str,
+    payload_text: str,
+) -> Optional[CopilotAskUserQuestionEvent]:
+    question, options = _extract_copilot_question_from_text(payload_text)
+    tool_name_normalized = tool_name.strip().lower()
+    if not question and tool_name_normalized not in {"askuserquestion", "ask-user", "ask_user_question", "ask_user"}:
+        return None
+    return CopilotAskUserQuestionEvent(
+        cwd=cwd,
+        timestamp=timestamp,
+        question=question,
+        options=options,
+        source_event_name=event_name,
+    )
 
 
 def parse_copilot_hook_input(
@@ -428,16 +521,38 @@ def parse_copilot_hook_input(
             prompt=data.get("prompt", ""),
         )
     elif event_name == "preToolUse":
+        tool_name = data.get("toolName", "")
+        tool_args = data.get("toolArgs", "")
+        ask_user_event = _parse_copilot_ask_user_event(
+            event_name=event_name,
+            cwd=cwd,
+            timestamp=timestamp,
+            tool_name=tool_name,
+            payload_text=tool_args,
+        )
+        if ask_user_event is not None:
+            return ask_user_event
         return PreToolUseEvent(
             cwd=cwd, timestamp=timestamp,
-            tool_name=data.get("toolName", ""),
-            tool_args=data.get("toolArgs", ""),
+            tool_name=tool_name,
+            tool_args=tool_args,
         )
     elif event_name == "postToolUse":
+        tool_name = data.get("toolName", "")
+        tool_result = data.get("toolResult", "")
+        ask_user_event = _parse_copilot_ask_user_event(
+            event_name=event_name,
+            cwd=cwd,
+            timestamp=timestamp,
+            tool_name=tool_name,
+            payload_text=tool_result,
+        )
+        if ask_user_event is not None:
+            return ask_user_event
         return PostToolUseEvent(
             cwd=cwd, timestamp=timestamp,
-            tool_name=data.get("toolName", ""),
-            tool_result=data.get("toolResult", ""),
+            tool_name=tool_name,
+            tool_result=tool_result,
         )
     elif event_name == "errorOccurred":
         return ErrorOccurredEvent(
@@ -449,8 +564,6 @@ def parse_copilot_hook_input(
     else:
         logger.warning("Unknown copilot hook event: %s", event_name)
         return None
-
-
 def format_copilot_notification(event: CopilotHookEvent) -> tuple[str, str]:
     """将 copilot-cli hook 事件格式化为飞书通知内容
 
@@ -483,6 +596,15 @@ def format_copilot_notification(event: CopilotHookEvent) -> tuple[str, str]:
             f"**结果**: {event.tool_result[:200]}\n"
             f"**目录**: {event.cwd}"
         )
+    elif isinstance(event, CopilotAskUserQuestionEvent):
+        title = "Copilot CLI — 需要回答"
+        option_labels = [
+            option.get("label", "")
+            for option in event.options
+            if isinstance(option, dict) and option.get("label")
+        ]
+        options_line = f"\n**选项**: {' / '.join(option_labels)}" if option_labels else ""
+        content = f"**问题**: {event.question}{options_line}\n**目录**: {event.cwd}"
     elif isinstance(event, ErrorOccurredEvent):
         title = "Copilot CLI — 错误"
         content = (
@@ -519,10 +641,15 @@ def handle_copilot_hook_event(
     if event is None:
         return 0
 
-    # State management: session-start/prompt → RUNNING, others → check WAITING
+    # State management: session-start/prompt → RUNNING, ask-user/question → WAITING, others → check WAITING
     if state_manager is not None:
         if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent, PreToolUseEvent)):
             state_manager.transition(SessionState.RUNNING)
+        elif isinstance(event, CopilotAskUserQuestionEvent):
+            should_notify = state_manager.transition(SessionState.WAITING)
+            if not should_notify:
+                logger.info("Copilot ask-user notification suppressed by state manager")
+                return 0
         elif isinstance(event, (SessionEndEvent, PostToolUseEvent, ErrorOccurredEvent)):
             should_notify = state_manager.transition(SessionState.WAITING)
             if not should_notify:
@@ -536,7 +663,7 @@ def handle_copilot_hook_event(
     else:
         logger.warning("FeishuBot not available, notification not sent")
 
-    if auto_replier is not None and isinstance(event, (SessionEndEvent, PostToolUseEvent, ErrorOccurredEvent)):
+    if auto_replier is not None and isinstance(event, (SessionEndEvent, PostToolUseEvent, ErrorOccurredEvent, CopilotAskUserQuestionEvent)):
         auto_replier.arm()
 
     return 0
@@ -580,6 +707,8 @@ def build_copilot_ipc_event(
     # Map event class to notify_role for daemon-side state machine
     if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent, PreToolUseEvent)):
         role = "running"
+    elif isinstance(event, CopilotAskUserQuestionEvent):
+        role = "waiting_after_running"
     elif isinstance(event, (SessionEndEvent, PostToolUseEvent, ErrorOccurredEvent)):
         role = "waiting"
     else:

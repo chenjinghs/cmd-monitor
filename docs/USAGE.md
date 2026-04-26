@@ -295,6 +295,12 @@ cmd-monitor monitor --transcript "C:\Users\you\Documents\PowerShell_transcript.l
 | `Notification` | Claude 需要输入/提示 | Claude Code — 需要输入 |
 | `Stop` | Claude 完成响应 | Claude Code — 已停止 |
 | `PermissionRequest` | 权限对话框出现 | Claude Code — 权限请求 |
+| `AskUserQuestion` | Claude 主动向用户提问 | Claude Code — 需要回答 |
+
+**实测说明：**
+- `AskUserQuestion`、`PermissionRequest`、`Stop` 已在真实联调中稳定观测到。
+- 普通文本追问/澄清在当前环境下通常只会落到 `Stop`，不会稳定触发 `Notification`。
+- 因此不要把 `Notification` 当作“所有等待用户输入”场景的统一事件。
 
 **工作原理：**
 ```

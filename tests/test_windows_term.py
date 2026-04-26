@@ -21,17 +21,18 @@ def test_collect_terminal_context_prefers_process_tree_tab_index() -> None:
     selected_tab.assert_not_called()
 
 
-def test_collect_terminal_context_falls_back_to_selected_tab_index() -> None:
+def test_collect_terminal_context_keeps_unknown_tab_when_process_tree_lookup_fails() -> None:
     with (
         patch("cmd_monitor.windows_term._get_wt_session", return_value="wt-session"),
         patch("cmd_monitor.windows_term._find_wt_window_pid", return_value=123),
         patch("cmd_monitor.windows_term._hwnd_from_pid", return_value=456),
         patch("cmd_monitor.windows_term._find_my_tab_index", return_value=-1),
-        patch("cmd_monitor.windows_term._find_selected_tab_index", return_value=4),
+        patch("cmd_monitor.windows_term._find_selected_tab_index", return_value=4) as selected_tab,
     ):
         ctx = collect_terminal_context()
 
-    assert ctx.wt_tab_index == 4
+    assert ctx.wt_tab_index == -1
+    selected_tab.assert_not_called()
 
 
 def test_collect_terminal_context_keeps_unknown_tab_when_both_strategies_fail() -> None:

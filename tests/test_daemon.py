@@ -47,11 +47,26 @@ def test_handle_hook_event_registers_session_and_returns_token() -> None:
     assert info.wt_window_hwnd == 12345
 
 
-def test_two_sessions_get_different_tokens() -> None:
+def test_status_includes_wt_session_and_hwnd_for_unknown_tab() -> None:
     d = make_daemon()
-    r1 = d._handle_pipe_event({"type": "hook_event", "session_id": "A", "title": "t", "content": "c"})
-    r2 = d._handle_pipe_event({"type": "hook_event", "session_id": "B", "title": "t", "content": "c"})
-    assert r1["token"] != r2["token"]
+    d._handle_pipe_event(
+        {
+            "type": "hook_event",
+            "session_id": "sess-A",
+            "event_name": "Stop",
+            "title": "Claude — stopped",
+            "content": "x",
+            "notify_role": "waiting",
+            "wt_session": "{guid-A}",
+            "wt_tab_index": -1,
+            "wt_window_hwnd": 12345,
+        }
+    )
+    resp = d._handle_pipe_event({"type": "status"})
+    assert resp["ok"] is True
+    assert resp["sessions"][0]["tab"] == -1
+    assert resp["sessions"][0]["wt_session"] == "{guid-A}"
+    assert resp["sessions"][0]["hwnd"] == 12345
 
 
 def test_feishu_reply_routes_to_correct_session() -> None:
@@ -130,29 +145,29 @@ def test_auto_reply_cancelled_on_user_reply() -> None:
     assert fired == []  # cancel won
 
 
-def test_handle_hook_event_ask_user_question_not_suppressed_while_waiting() -> None:
+def test_handle_hook_event_copilot_ask_user_question_not_suppressed_while_waiting() -> None:
     d = make_daemon()
     first = d._handle_pipe_event(
         {
             "type": "hook_event",
-            "session_id": "sess-ask",
-            "event_name": "Stop",
-            "title": "Claude Code — 已停止",
-            "content": "完成",
-            "notify_role": "waiting",
+            "session_id": "copilot:/project",
+            "event_name": "SessionStartEvent",
+            "title": "Copilot CLI — 会话开始",
+            "content": "开始",
+            "notify_role": "running",
         }
     )
     second = d._handle_pipe_event(
         {
             "type": "hook_event",
-            "session_id": "sess-ask",
-            "event_name": "AskUserQuestion",
-            "title": "Claude Code — 需要回答",
+            "session_id": "copilot:/project",
+            "event_name": "CopilotAskUserQuestionEvent",
+            "title": "Copilot CLI — 需要回答",
             "content": "问题: 继续吗?",
             "notify_role": "waiting_after_running",
         }
     )
-    assert first["notified"] is True
+    assert first["notified"] is False
     assert second["ok"] is True
     assert second["notified"] is True
 

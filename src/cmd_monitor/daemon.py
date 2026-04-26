@@ -158,7 +158,13 @@ class Daemon:
                 "ok": True,
                 "pid": os.getpid(),
                 "sessions": [
-                    {"session_id": s.session_id, "cwd": s.cwd, "tab": s.wt_tab_index}
+                    {
+                        "session_id": s.session_id,
+                        "cwd": s.cwd,
+                        "tab": s.wt_tab_index,
+                        "wt_session": s.wt_session,
+                        "hwnd": s.wt_window_hwnd or s.window_hwnd,
+                    }
                     for s in self._registry.all_sessions()
                 ],
                 "tokens": [

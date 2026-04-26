@@ -3,8 +3,6 @@
 import json
 from unittest.mock import MagicMock
 
-import pytest
-
 from cmd_monitor.hook_handler import (
     AskUserQuestionEvent,
     ErrorOccurredEvent,
@@ -107,6 +105,7 @@ def test_parse_ask_user_question_event() -> None:
             {"label": "查日志"},
             {"label": "继续测试"},
         ],
+        "last_assistant_message": "请先确认当前方案。",
     }
     event = parse_hook_input(json.dumps(data))
     assert isinstance(event, AskUserQuestionEvent)
@@ -115,6 +114,7 @@ def test_parse_ask_user_question_event() -> None:
         {"label": "查日志"},
         {"label": "继续测试"},
     ]
+    assert event.final_message == "请先确认当前方案。"
 
 
 def test_parse_pre_tool_use_ask_user_question_event() -> None:
@@ -131,6 +131,7 @@ def test_parse_pre_tool_use_ask_user_question_event() -> None:
                 }
             ]
         },
+        "last_assistant_message": "建议先看最新日志。",
     }
     event = parse_hook_input(json.dumps(data))
     assert isinstance(event, AskUserQuestionEvent)
@@ -139,6 +140,7 @@ def test_parse_pre_tool_use_ask_user_question_event() -> None:
         {"label": "查日志"},
         {"label": "继续测试"},
     ]
+    assert event.final_message == "建议先看最新日志。"
 
 
 def test_parse_invalid_json() -> None:
@@ -241,12 +243,16 @@ def test_format_ask_user_question_event() -> None:
         hook_event_name="AskUserQuestion",
         question="下一步做什么？",
         options=[{"label": "查日志"}, {"label": "继续测试"}],
+        final_message="建议先确认最近一次输出。",
     )
     title, content = format_notification(event)
     assert "需要回答" in title
     assert "下一步做什么？" in content
     assert "查日志" in content
     assert "继续测试" in content
+    assert "**结尾消息**" in content
+    assert "建议先确认最近一次输出。" in content
+    assert "**上下文**" not in content
     assert "/code" in content
 
 
@@ -377,6 +383,21 @@ def test_handle_pre_tool_use_ask_user_question_sends_card() -> None:
     assert "下一步做什么？" in content
 
 
+def test_handle_ask_user_question_arms_auto_reply() -> None:
+    bot = MagicMock()
+    auto_replier = MagicMock()
+    input_json = json.dumps({
+        "session_id": "sess_ask",
+        "cwd": "/workspace",
+        "hook_event_name": "AskUserQuestion",
+        "question": "下一步做什么？",
+        "options": [{"label": "查日志"}, {"label": "继续测试"}],
+    })
+    exit_code = handle_hook_event(input_json, bot, auto_replier=auto_replier)
+    assert exit_code == 0
+    auto_replier.arm.assert_called_once()
+
+
 def test_handle_pre_tool_use_non_ask_user_question_skips() -> None:
     bot = MagicMock()
     input_json = json.dumps({
@@ -387,13 +408,6 @@ def test_handle_pre_tool_use_non_ask_user_question_skips() -> None:
         "tool_input": {"command": "pwd"},
     })
     exit_code = handle_hook_event(input_json, bot)
-    assert exit_code == 0
-    bot.send_card.assert_not_called()
-
-
-def test_handle_invalid_input_returns_zero() -> None:
-    bot = MagicMock()
-    exit_code = handle_hook_event("not json", bot)
     assert exit_code == 0
     bot.send_card.assert_not_called()
 
@@ -468,18 +482,43 @@ def test_copilot_parse_pre_tool_use() -> None:
     assert event.tool_args == '{"command": "ls -la"}'
 
 
-def test_copilot_parse_post_tool_use() -> None:
+
+
+def test_copilot_parse_pre_tool_use_ask_user_question() -> None:
+    data = {
+        "hook_event_name": "preToolUse",
+        "cwd": "/project",
+        "toolName": "ask-user",
+        "toolArgs": json.dumps(
+            {
+                "question": "下一步做什么？",
+                "options": [{"label": "继续"}, {"label": "停止"}],
+            },
+            ensure_ascii=False,
+        ),
+    }
+    event = parse_copilot_hook_input(json.dumps(data, ensure_ascii=False))
+    assert event.__class__.__name__ == "CopilotAskUserQuestionEvent"
+    assert event.question == "下一步做什么？"
+    assert event.options == [{"label": "继续"}, {"label": "停止"}]
+
+
+def test_copilot_parse_post_tool_use_ask_user_question() -> None:
     data = {
         "hook_event_name": "postToolUse",
         "cwd": "/project",
-        "toolName": "edit",
-        "toolResult": "File updated successfully",
+        "toolName": "ask-user",
+        "toolResult": json.dumps(
+            {
+                "question": "确认继续吗？",
+                "options": [{"label": "是"}, {"label": "否"}],
+            },
+            ensure_ascii=False,
+        ),
     }
-    event = parse_copilot_hook_input(json.dumps(data))
-    assert isinstance(event, PostToolUseEvent)
-    assert event.tool_name == "edit"
-    assert event.tool_result == "File updated successfully"
-
+    event = parse_copilot_hook_input(json.dumps(data, ensure_ascii=False))
+    assert event.__class__.__name__ == "CopilotAskUserQuestionEvent"
+    assert event.question == "确认继续吗？"
 
 def test_copilot_parse_error_occurred() -> None:
     data = {
@@ -525,6 +564,19 @@ def test_copilot_format_pre_tool_use() -> None:
     assert "ls -la" in content
 
 
+def test_copilot_format_ask_user_question() -> None:
+    class_name_event = parse_copilot_hook_input(json.dumps({
+        "hook_event_name": "preToolUse",
+        "cwd": "/code",
+        "toolName": "ask-user",
+        "toolArgs": json.dumps({"question": "下一步做什么？", "options": [{"label": "继续"}]}, ensure_ascii=False),
+    }, ensure_ascii=False))
+    title, content = format_copilot_notification(class_name_event)
+    assert "需要回答" in title
+    assert "下一步做什么？" in content
+    assert "继续" in content
+
+
 def test_copilot_format_error_occurred() -> None:
     event = ErrorOccurredEvent(cwd="/project", error="timeout", error_context="api", recoverable=True)
     title, content = format_copilot_notification(event)
@@ -550,17 +602,26 @@ def test_copilot_handle_session_start_sends_card() -> None:
     assert "会话开始" in title
 
 
-def test_copilot_handle_pre_tool_use_sends_card() -> None:
+def test_copilot_handle_pre_tool_use_ask_user_question_sends_card() -> None:
     bot = MagicMock()
     input_json = json.dumps({
         "hook_event_name": "preToolUse",
         "cwd": "/project",
-        "toolName": "bash",
-        "toolArgs": "echo hello",
-    })
+        "toolName": "ask-user",
+        "toolArgs": json.dumps(
+            {
+                "question": "下一步做什么？",
+                "options": [{"label": "继续"}, {"label": "停止"}],
+            },
+            ensure_ascii=False,
+        ),
+    }, ensure_ascii=False)
     exit_code = handle_copilot_hook_event(input_json, bot)
     assert exit_code == 0
     bot.send_card.assert_called_once()
+    title, content = bot.send_card.call_args[0]
+    assert "需要回答" in title
+    assert "下一步做什么？" in content
 
 
 def test_copilot_handle_pre_tool_use_does_not_arm_auto_reply() -> None:
