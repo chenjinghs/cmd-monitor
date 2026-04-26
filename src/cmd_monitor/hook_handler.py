@@ -36,6 +36,7 @@ class StopEvent(HookEvent):
     """Stop 事件 — Claude 完成响应"""
 
     stop_hook_active: bool = False
+    final_message: str = ""  # assistant_output.response.output_message（可能为空）
 
 
 @dataclass
@@ -135,11 +136,15 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
             message=data.get("message", ""),
         )
     elif event_name == "Stop":
+        assistant_output = data.get("assistant_output") or {}
+        response = assistant_output.get("response") or {}
+        final_message = response.get("output_message") or ""
         return StopEvent(
             session_id=session_id,
             cwd=cwd,
             hook_event_name=event_name,
             stop_hook_active=data.get("stop_hook_active", False),
+            final_message=str(final_message).strip(),
         )
     elif event_name == "PermissionRequest":
         tool_input = data.get("tool_input")
@@ -176,8 +181,15 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
         )
     elif isinstance(event, StopEvent):
         title = "Claude Code — 已停止"
+        # 截取最后一条消息前 200 字符，避免卡片过长
+        msg_snippet = ""
+        if event.final_message:
+            snippet = event.final_message[:200]
+            if len(event.final_message) > 200:
+                snippet += "…"
+            msg_snippet = f"\n**结尾消息**: {snippet}"
         content = (
-            f"**状态**: 任务完成\n"
+            f"**状态**: 任务完成{msg_snippet}\n"
             f"**目录**: {event.cwd}\n"
             f"**会话**: {event.session_id[:8]}"
         )
