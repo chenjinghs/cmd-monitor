@@ -19,13 +19,10 @@ def load_config(path: Optional[Union[str, Path]] = None) -> dict[str, Any]:
         path: 配置文件路径，None 则使用默认路径
 
     Returns:
-        配置字典
-
-    Raises:
-        FileNotFoundError: 配置文件不存在
+        配置字典；文件不存在时返回空字典（允许 status/stop 等命令在任意目录运行）
     """
     config_path = Path(path) if path else DEFAULT_CONFIG_PATH
     if not config_path.exists():
-        raise FileNotFoundError(f"配置文件不存在: {config_path}")
+        return {}
     with open(config_path, "rb") as f:
         return tomllib.load(f)

@@ -125,15 +125,15 @@ class StateManager:
             logger.debug("State: IDLE → RUNNING (debounce cancelled)")
             return False
 
-        # WAITING → RUNNING：用户回复，重置
+        # WAITING → RUNNING：用户主动回复，清除通知冷却计时，确保下一次 Stop 能发卡片
         if current.state == SessionState.WAITING and new_state == SessionState.RUNNING:
             self._state = StateInfo(
                 state=SessionState.RUNNING,
                 last_state_change=now,
-                last_notification_time=current.last_notification_time,
-                last_notification_state=current.last_notification_state,
+                last_notification_time=0.0,  # 用户已回复，重置冷却
+                last_notification_state=None,
             )
-            logger.debug("State: WAITING → RUNNING (reset)")
+            logger.debug("State: WAITING → RUNNING (user replied, cooldown reset)")
             return False
 
         # WAITING → IDLE：再次空闲
