@@ -105,6 +105,40 @@ class ErrorOccurredEvent(CopilotHookEvent):
     recoverable: bool = False
 
 
+def _read_last_assistant_message(transcript_path: str) -> str:
+    """从 transcript 文件读取最后一条 assistant 消息文本。"""
+    if not transcript_path:
+        return ""
+    try:
+        import pathlib
+        lines = pathlib.Path(transcript_path).read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return ""
+    # Scan lines in reverse; each line is a JSON object
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        role = obj.get("role") or obj.get("author") or obj.get("type") or ""
+        if str(role).lower() != "assistant":
+            continue
+        content = obj.get("content") or obj.get("message") or obj.get("text") or ""
+        if isinstance(content, list):
+            # content may be a list of blocks [{type:"text", text:"..."}]
+            parts = [
+                block.get("text", "") for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            content = "\n".join(parts)
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return ""
+
+
 def parse_hook_input(input_json: str) -> Optional[HookEvent]:
     """解析 Claude Code hook 的 stdin JSON 输入
 
@@ -136,15 +170,13 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
             message=data.get("message", ""),
         )
     elif event_name == "Stop":
-        assistant_output = data.get("assistant_output") or {}
-        response = assistant_output.get("response") or {}
-        final_message = response.get("output_message") or ""
+        final_message = _read_last_assistant_message(data.get("transcript_path", ""))
         return StopEvent(
             session_id=session_id,
             cwd=cwd,
             hook_event_name=event_name,
             stop_hook_active=data.get("stop_hook_active", False),
-            final_message=str(final_message).strip(),
+            final_message=final_message,
         )
     elif event_name == "PermissionRequest":
         tool_input = data.get("tool_input")
