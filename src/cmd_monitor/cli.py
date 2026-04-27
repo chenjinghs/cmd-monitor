@@ -1,10 +1,8 @@
 """CLI 入口模块"""
 
-import os
 import sys
-import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import click
 
@@ -323,6 +321,7 @@ def hooks(
 @click.pass_context
 def monitor(ctx: click.Context, transcript: Optional[str]) -> None:
     """监控 PowerShell transcript 文件"""
+    from cmd_monitor.ipc import send_event
     from cmd_monitor.ps_monitor import PsMonitor
 
     config = ctx.obj["config"]
@@ -348,6 +347,13 @@ def monitor(ctx: click.Context, transcript: Optional[str]) -> None:
         )
         bot.start()
 
+    def notify_via_daemon(event: dict) -> bool:
+        resp = send_event(event, timeout_ms=2000)
+        if not resp or not resp.get("ok"):
+            return False
+        reason = resp.get("reason", "")
+        return bool(resp.get("notified")) or reason == "suppressed"
+
     from cmd_monitor.state_manager import StateManager
 
     state_config = config.get("state", {})
@@ -363,6 +369,7 @@ def monitor(ctx: click.Context, transcript: Optional[str]) -> None:
         feishu_bot=bot,
         debounce_seconds=state_manager.debounce_seconds,
         notification_cooldown=state_manager.notification_cooldown,
+        notification_callback=notify_via_daemon,
     )
 
     click.echo(f"正在监控: {transcript_path}")

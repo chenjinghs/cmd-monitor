@@ -325,9 +325,13 @@ Claude Code 触发事件
 | `postToolUse` | 工具执行后 | Copilot CLI — 工具完成 |
 | `errorOccurred` | 错误发生 | Copilot CLI — 错误 |
 
+**限制说明：**
+- Copilot CLI 当前没有 Claude Code `Stop` 那种“最终文本回答完成”hook。
+- 如果希望 Copilot **只输出文本、没有工具调用** 时也推送飞书，需要叠加下面的 transcript 监控模式。
+
 ### 模式 3：PowerShell Transcript 监控（通用）
 
-通过 `Start-Transcript` 记录终端输出，检测空闲状态。适用于任意 CLI 工具。
+通过 `Start-Transcript` 记录终端输出，检测空闲状态。适用于任意 CLI 工具，也可补足 Copilot CLI 缺少“文本回答完成”hook 的问题。
 
 ```bash
 # 在 PowerShell 中启动 transcript
@@ -336,6 +340,8 @@ Start-Transcript -Path "C:\transcripts\session.log"
 # 在另一个终端启动监控
 cmd-monitor monitor -t "C:\transcripts\session.log"
 ```
+
+当 daemon 正在运行且 registry 里已有同 cwd 的 Copilot session 时，`monitor` 会优先把 transcript 空闲事件送给 daemon，飞书卡片仍会带原来的 `[token]` 前缀；找不到匹配 session 时，再回退为 monitor 直接发卡片。
 
 **工作原理：**
 ```

@@ -68,6 +68,7 @@ class CopilotHookEvent:
 
     cwd: str = ""
     timestamp: int = 0
+    final_message: str = ""
 
 
 @dataclass
@@ -139,18 +140,41 @@ def _extract_copilot_question_from_text(text: str) -> tuple[str, list[Dict[str, 
     if parsed is not None:
         candidates.append(parsed)
 
+    def _normalize_options(raw_options: Any) -> list[Dict[str, Any]]:
+        if not isinstance(raw_options, list):
+            return []
+        normalized: list[Dict[str, Any]] = []
+        for option in raw_options:
+            if isinstance(option, dict):
+                label = (
+                    option.get("label")
+                    or option.get("title")
+                    or option.get("text")
+                    or option.get("value")
+                )
+                if label:
+                    normalized.append({"label": str(label)})
+            elif isinstance(option, str) and option:
+                normalized.append({"label": option})
+        return normalized
+
+    def _normalize_tool_name(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        tail = raw.split(".")[-1]
+        return tail.replace("-", "").replace("_", "")
+
     def _from_obj(obj: Any) -> tuple[str, list[Dict[str, Any]]]:
         if isinstance(obj, dict):
-            tool_name = str(obj.get("toolName") or obj.get("tool_name") or "")
-            if tool_name.lower() in {"askuserquestion", "ask-user", "ask_user_question", "ask_user"}:
+            tool_name = _normalize_tool_name(obj.get("toolName") or obj.get("tool_name") or "")
+            is_ask_user_tool = tool_name in {"askuserquestion", "askuser"}
+            if is_ask_user_tool:
                 question = str(
                     obj.get("question")
                     or obj.get("prompt")
                     or obj.get("message")
                     or ""
                 )
-                raw_options = obj.get("options")
-                options = raw_options if isinstance(raw_options, list) else []
+                options = _normalize_options(obj.get("options") or obj.get("choices"))
                 if question:
                     return question, options
 
@@ -159,15 +183,29 @@ def _extract_copilot_question_from_text(text: str) -> tuple[str, list[Dict[str, 
                 first_question = raw_questions[0]
                 if isinstance(first_question, dict):
                     question = str(first_question.get("question") or "")
-                    raw_options = first_question.get("options")
-                    options = raw_options if isinstance(raw_options, list) else []
+                    options = _normalize_options(
+                        first_question.get("options") or first_question.get("choices")
+                    )
                     if question:
                         return question, options
 
             question = str(obj.get("question") or obj.get("prompt") or obj.get("message") or "")
-            raw_options = obj.get("options")
-            options = raw_options if isinstance(raw_options, list) else []
-            if question and (options or any(k in obj for k in ("questions", "toolName", "tool_name"))):
+            options = _normalize_options(obj.get("options") or obj.get("choices"))
+            if question and (
+                options
+                or is_ask_user_tool
+                or any(
+                    k in obj
+                    for k in (
+                        "questions",
+                        "choices",
+                        "allow_freeform",
+                        "allowFreeform",
+                        "toolName",
+                        "tool_name",
+                    )
+                )
+            ):
                 return question, options
 
             for key in ("toolArgs", "tool_args", "toolResult", "tool_result", "input", "result", "payload"):
@@ -187,6 +225,72 @@ def _extract_copilot_question_from_text(text: str) -> tuple[str, list[Dict[str, 
         if question:
             return question, options
     return "", []
+
+
+def _extract_copilot_text_content(value: Any) -> str:
+    """从 copilot 事件负载中提取适合展示的文本结果。"""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return stripped
+        nested = _extract_copilot_text_content(parsed)
+        return nested or stripped
+    if isinstance(value, dict):
+        for key in (
+            "textResultForLlm",
+            "output_message",
+            "outputMessage",
+            "message",
+            "text",
+            "final_message",
+            "finalMessage",
+        ):
+            nested = _extract_copilot_text_content(value.get(key))
+            if nested:
+                return nested
+        for key in ("response", "result", "error"):
+            nested = _extract_copilot_text_content(value.get(key))
+            if nested:
+                return nested
+        return ""
+    if isinstance(value, list):
+        parts = [_extract_copilot_text_content(item) for item in value]
+        non_empty_parts = [part for part in parts if part]
+        return "\n".join(non_empty_parts)
+    return str(value).strip()
+
+
+def _extract_copilot_result_summary(value: Any) -> str:
+    """提取 postToolUse 结果摘要，优先返回 resultType。"""
+    if isinstance(value, dict):
+        result_type = str(value.get("resultType") or "").strip()
+        if result_type:
+            return result_type
+    return _extract_copilot_text_content(value)
+
+
+def _format_message_snippet(
+    text: str,
+    label: str,
+    limit: int = 200,
+    exclude: str = "",
+) -> str:
+    """格式化卡片里的附加消息片段。"""
+    normalized_text = text.strip()
+    if not normalized_text:
+        return ""
+    if exclude and normalized_text == exclude.strip():
+        return ""
+    snippet = normalized_text[:limit]
+    if len(normalized_text) > limit:
+        snippet += "…"
+    return f"\n**{label}**: {snippet}"
 
 
 def _read_last_assistant_message(transcript_path: str) -> str:
@@ -464,7 +568,7 @@ def _parse_copilot_ask_user_event(
     cwd: str,
     timestamp: int,
     tool_name: str,
-    payload_text: str,
+    payload_text: Any,
 ) -> Optional[CopilotAskUserQuestionEvent]:
     question, options = _extract_copilot_question_from_text(payload_text)
     tool_name_normalized = tool_name.strip().lower()
@@ -476,6 +580,7 @@ def _parse_copilot_ask_user_event(
         question=question,
         options=options,
         source_event_name=event_name,
+        final_message=_extract_copilot_text_content(payload_text),
     )
 
 
@@ -514,6 +619,13 @@ def parse_copilot_hook_input(
         return SessionEndEvent(
             cwd=cwd, timestamp=timestamp,
             reason=data.get("reason", ""),
+            final_message=_extract_copilot_text_content(
+                data.get("finalMessage")
+                or data.get("final_message")
+                or data.get("lastAssistantMessage")
+                or data.get("last_assistant_message")
+                or data.get("message")
+            ),
         )
     elif event_name == "userPromptSubmitted":
         return UserPromptSubmittedEvent(
@@ -552,14 +664,17 @@ def parse_copilot_hook_input(
         return PostToolUseEvent(
             cwd=cwd, timestamp=timestamp,
             tool_name=tool_name,
-            tool_result=tool_result,
+            tool_result=_extract_copilot_result_summary(tool_result),
+            final_message=_extract_copilot_text_content(tool_result),
         )
     elif event_name == "errorOccurred":
+        raw_error = data.get("error", "")
         return ErrorOccurredEvent(
             cwd=cwd, timestamp=timestamp,
-            error=data.get("error", ""),
+            error=_extract_copilot_text_content(raw_error),
             error_context=data.get("errorContext", ""),
             recoverable=data.get("recoverable", False),
+            final_message=_extract_copilot_text_content(raw_error),
         )
     else:
         logger.warning("Unknown copilot hook event: %s", event_name)
@@ -578,7 +693,8 @@ def format_copilot_notification(event: CopilotHookEvent) -> tuple[str, str]:
         content = f"**来源**: {event.source}\n**目录**: {event.cwd}"
     elif isinstance(event, SessionEndEvent):
         title = "Copilot CLI — 会话结束"
-        content = f"**原因**: {event.reason}\n**目录**: {event.cwd}"
+        msg_snippet = _format_message_snippet(event.final_message, "结尾消息", limit=300)
+        content = f"**原因**: {event.reason}{msg_snippet}\n**目录**: {event.cwd}"
     elif isinstance(event, UserPromptSubmittedEvent):
         title = "Copilot CLI — 用户提交"
         content = f"**提示**: {event.prompt[:100]}\n**目录**: {event.cwd}"
@@ -591,9 +707,15 @@ def format_copilot_notification(event: CopilotHookEvent) -> tuple[str, str]:
         )
     elif isinstance(event, PostToolUseEvent):
         title = "Copilot CLI — 工具完成"
+        msg_snippet = _format_message_snippet(
+            event.final_message,
+            "结果详情",
+            limit=300,
+            exclude=event.tool_result,
+        )
         content = (
             f"**工具**: {event.tool_name}\n"
-            f"**结果**: {event.tool_result[:200]}\n"
+            f"**结果**: {event.tool_result[:200]}{msg_snippet}\n"
             f"**目录**: {event.cwd}"
         )
     elif isinstance(event, CopilotAskUserQuestionEvent):
@@ -604,13 +726,25 @@ def format_copilot_notification(event: CopilotHookEvent) -> tuple[str, str]:
             if isinstance(option, dict) and option.get("label")
         ]
         options_line = f"\n**选项**: {' / '.join(option_labels)}" if option_labels else ""
-        content = f"**问题**: {event.question}{options_line}\n**目录**: {event.cwd}"
+        msg_snippet = _format_message_snippet(
+            event.final_message,
+            "补充说明",
+            limit=300,
+            exclude=event.question,
+        )
+        content = f"**问题**: {event.question}{options_line}{msg_snippet}\n**目录**: {event.cwd}"
     elif isinstance(event, ErrorOccurredEvent):
         title = "Copilot CLI — 错误"
+        msg_snippet = _format_message_snippet(
+            event.final_message,
+            "错误详情",
+            limit=300,
+            exclude=event.error,
+        )
         content = (
             f"**错误**: {event.error[:200]}\n"
             f"**上下文**: {event.error_context}\n"
-            f"**可恢复**: {event.recoverable}\n"
+            f"**可恢复**: {event.recoverable}{msg_snippet}\n"
             f"**目录**: {event.cwd}"
         )
     else:
@@ -641,20 +775,25 @@ def handle_copilot_hook_event(
     if event is None:
         return 0
 
-    # State management: session-start/prompt → RUNNING, ask-user/question → WAITING, others → check WAITING
+    # State management: session-start/prompt/tool-complete → RUNNING,
+    # ask-user/question → WAITING, completed/error → check WAITING
     if state_manager is not None:
-        if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent, PreToolUseEvent)):
+        if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent, PreToolUseEvent, PostToolUseEvent)):
             state_manager.transition(SessionState.RUNNING)
         elif isinstance(event, CopilotAskUserQuestionEvent):
             should_notify = state_manager.transition(SessionState.WAITING)
             if not should_notify:
                 logger.info("Copilot ask-user notification suppressed by state manager")
                 return 0
-        elif isinstance(event, (SessionEndEvent, PostToolUseEvent, ErrorOccurredEvent)):
+        elif isinstance(event, (SessionEndEvent, ErrorOccurredEvent)):
             should_notify = state_manager.transition(SessionState.WAITING)
             if not should_notify:
                 logger.info("Copilot notification suppressed by state manager")
                 return 0
+
+    if isinstance(event, PostToolUseEvent):
+        logger.info("Copilot postToolUse notification skipped until completion")
+        return 0
 
     title, content = format_copilot_notification(event)
     if feishu_bot:
@@ -663,7 +802,7 @@ def handle_copilot_hook_event(
     else:
         logger.warning("FeishuBot not available, notification not sent")
 
-    if auto_replier is not None and isinstance(event, (SessionEndEvent, PostToolUseEvent, ErrorOccurredEvent, CopilotAskUserQuestionEvent)):
+    if auto_replier is not None and isinstance(event, (SessionEndEvent, ErrorOccurredEvent, CopilotAskUserQuestionEvent)):
         auto_replier.arm()
 
     return 0
@@ -705,11 +844,11 @@ def build_copilot_ipc_event(
         return None
 
     # Map event class to notify_role for daemon-side state machine
-    if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent, PreToolUseEvent)):
+    if isinstance(event, (SessionStartEvent, UserPromptSubmittedEvent, PreToolUseEvent, PostToolUseEvent)):
         role = "running"
     elif isinstance(event, CopilotAskUserQuestionEvent):
         role = "waiting_after_running"
-    elif isinstance(event, (SessionEndEvent, PostToolUseEvent, ErrorOccurredEvent)):
+    elif isinstance(event, (SessionEndEvent, ErrorOccurredEvent)):
         role = "waiting"
     else:
         role = "skip"

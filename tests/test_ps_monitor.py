@@ -10,11 +10,16 @@ import pytest
 from cmd_monitor.ps_monitor import (
     PS_PROMPT_RE,
     TranscriptState,
+    build_idle_ipc_event,
     check_idle,
+    extract_last_output_block,
+    extract_prompt_cwd,
     follow_transcript,
     format_idle_notification,
+    get_waiting_cwd,
     is_prompt_line,
     is_transcript_header,
+    is_waiting_for_input,
     update_state,
 )
 
@@ -83,6 +88,38 @@ def test_is_prompt_line_invalid() -> None:
     assert is_prompt_line("Handles  NPM(K)  PM(K)") is False
     assert is_prompt_line("") is False
     assert is_prompt_line("PS something") is False
+
+
+def test_extract_prompt_cwd() -> None:
+    assert extract_prompt_cwd("PS C:\\Users\\test>") == "C:\\Users\\test"
+    assert extract_prompt_cwd("PS D:\\repo> Get-ChildItem") == "D:\\repo"
+    assert extract_prompt_cwd("not prompt") == ""
+
+
+def test_waiting_prompt_detection_requires_bare_prompt() -> None:
+    waiting_state = TranscriptState(recent_lines=["output", "PS E:\\repo>"])
+    running_state = TranscriptState(recent_lines=["PS E:\\repo> copilot", "thinking..."])
+    assert is_waiting_for_input(waiting_state) is True
+    assert get_waiting_cwd(waiting_state) == "E:\\repo"
+    assert is_waiting_for_input(running_state) is False
+    assert get_waiting_cwd(running_state) == ""
+
+
+def test_extract_last_output_block_returns_lines_before_waiting_prompt() -> None:
+    state = TranscriptState(
+        recent_lines=[
+            "PS E:\\repo> copilot",
+            "第一行",
+            "第二行",
+            "PS E:\\repo>",
+        ]
+    )
+    assert extract_last_output_block(state) == "第一行\n第二行"
+
+
+def test_extract_last_output_block_skips_prompt_only_state() -> None:
+    state = TranscriptState(recent_lines=["PS E:\\repo>"])
+    assert extract_last_output_block(state) == ""
 
 
 # --- is_transcript_header tests ---
@@ -196,21 +233,24 @@ def test_check_idle_exact_threshold() -> None:
 
 def test_format_idle_notification_with_lines() -> None:
     state = TranscriptState(
-        recent_lines=["line 1", "line 2", "line 3"],
+        recent_lines=["line 1", "line 2", "PS C:\\repo>"],
         last_activity_time=time.time(),
     )
     title, content = format_idle_notification(state, "C:\\transcript.txt")
-    assert "空闲" in title
+    assert "等待输入" in title
     assert "终端已空闲" in content
+    assert "C:\\repo" in content
     assert "C:\\transcript.txt" in content
+    assert "最后一条消息" in content
     assert "line 1" in content
-    assert "line 3" in content
+    assert "PS C:\\repo>" in content
 
 
 def test_format_idle_notification_no_lines() -> None:
     state = TranscriptState()
     title, content = format_idle_notification(state, "C:\\transcript.txt")
-    assert "空闲" in title
+    assert "等待输入" in title
+    assert "最后一条消息" in content
     assert "(无输出)" in content
 
 
@@ -221,6 +261,23 @@ def test_format_idle_notification_limits_to_5_lines() -> None:
     assert "line 5" in content
     assert "line 9" in content
     assert "line 4" not in content
+
+
+def test_format_idle_notification_truncates_last_output_block() -> None:
+    long_line = "x" * 350
+    state = TranscriptState(recent_lines=[long_line, "PS C:\\repo>"])
+    _, content = format_idle_notification(state, "C:\\log.txt")
+    assert "最后一条消息" in content
+    assert f"{'x' * 300}…" in content
+
+
+def test_build_idle_ipc_event_contains_cwd() -> None:
+    state = TranscriptState(recent_lines=["output", "PS E:\\repo>"])
+    event = build_idle_ipc_event(state, "C:\\log.txt")
+    assert event["type"] == "transcript_idle"
+    assert event["cwd"] == "E:\\repo"
+    assert event["title"] == "PowerShell — 等待输入"
+    assert "E:\\repo" in event["content"]
 
 
 # --- PS_PROMPT_RE tests ---
@@ -289,14 +346,46 @@ def test_ps_monitor_idle_triggers_notification() -> None:
     # Simulate state with recent activity
     m._state = TranscriptState(
         last_activity_time=time.time() - 1.0,
-        recent_lines=["PS C:\\> test", "output line"],
+        recent_lines=["output line", "PS C:\\repo>"],
     )
     # Directly call idle detection
     m._on_idle_detected()
     bot.send_card.assert_called_once()
     title, content = bot.send_card.call_args[0]
-    assert "空闲" in title
+    assert "等待输入" in title
     assert "output line" in content
+
+
+def test_ps_monitor_idle_callback_short_circuits_bot() -> None:
+    from cmd_monitor.ps_monitor import PsMonitor
+
+    bot = MagicMock()
+    callback = MagicMock(return_value=True)
+    m = PsMonitor(
+        transcript_path="C:\\dummy.txt",
+        feishu_bot=bot,
+        notification_callback=callback,
+    )
+    m._state = TranscriptState(recent_lines=["done", "PS C:\\repo>"])
+    m._on_idle_detected()
+    callback.assert_called_once()
+    bot.send_card.assert_not_called()
+
+
+def test_ps_monitor_idle_callback_falls_back_to_bot_on_false() -> None:
+    from cmd_monitor.ps_monitor import PsMonitor
+
+    bot = MagicMock()
+    callback = MagicMock(return_value=False)
+    m = PsMonitor(
+        transcript_path="C:\\dummy.txt",
+        feishu_bot=bot,
+        notification_callback=callback,
+    )
+    m._state = TranscriptState(recent_lines=["done", "PS C:\\repo>"])
+    m._on_idle_detected()
+    callback.assert_called_once()
+    bot.send_card.assert_called_once()
 
 
 def test_ps_monitor_idle_no_bot() -> None:

@@ -10,14 +10,15 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterator, List, Optional
+from typing import Any, Callable, Iterator, List, Optional
 
 from cmd_monitor.state_manager import SessionState, StateManager
 
 logger = logging.getLogger(__name__)
 
 # PowerShell 提示符正则: PS C:\Users\path>
-PS_PROMPT_RE = re.compile(r"^PS\s+[A-Z]:\\[^>]*>")
+PS_PROMPT_RE = re.compile(r"^PS\s+([A-Z]:\\[^>]*)>(?:\s.*)?$")
+WAITING_PS_PROMPT_RE = re.compile(r"^PS\s+([A-Z]:\\[^>]*)>\s*$")
 TRANSCRIPT_HEADER = "Windows PowerShell transcript start"
 TRANSCRIPT_FOOTER = "Windows PowerShell transcript end"
 
@@ -54,9 +55,59 @@ def is_prompt_line(line: str) -> bool:
         line: transcript 中的一行
 
     Returns:
-        是否匹配 PS C:\path> 格式
+        是否匹配 PS C:\\path> 格式
     """
     return bool(PS_PROMPT_RE.match(line))
+
+
+def extract_prompt_cwd(line: str) -> str:
+    """从 PowerShell 提示符行中提取 cwd。"""
+    match = PS_PROMPT_RE.match(line)
+    if match is None:
+        return ""
+    return match.group(1)
+
+
+def get_waiting_cwd(state: "TranscriptState") -> str:
+    """返回“空闲等待输入”状态下的 cwd；否则返回空字符串。"""
+    if not state.recent_lines:
+        return ""
+    match = WAITING_PS_PROMPT_RE.match(state.recent_lines[-1])
+    if match is None:
+        return ""
+    return match.group(1)
+
+
+def is_waiting_for_input(state: "TranscriptState") -> bool:
+    """最近一行是否为纯提示符，表示终端已回到输入态。"""
+    return bool(get_waiting_cwd(state))
+
+
+def extract_last_output_block(state: "TranscriptState") -> str:
+    """提取最近一次提示符前的输出块。"""
+    if not state.recent_lines:
+        return ""
+
+    idx = len(state.recent_lines) - 1
+    while idx >= 0:
+        line = state.recent_lines[idx]
+        if is_transcript_header(line) or WAITING_PS_PROMPT_RE.match(line):
+            idx -= 1
+            continue
+        break
+
+    if idx < 0:
+        return ""
+
+    block: list[str] = []
+    while idx >= 0:
+        line = state.recent_lines[idx]
+        if is_transcript_header(line) or is_prompt_line(line):
+            break
+        block.append(line)
+        idx -= 1
+
+    return "\n".join(reversed(block)).strip()
 
 
 def is_transcript_header(line: str) -> bool:
@@ -148,15 +199,36 @@ def format_idle_notification(state: TranscriptState, transcript_path: str) -> tu
     Returns:
         (title, content) 元组，用于 send_card()
     """
-    title = "PowerShell — 终端空闲"
-
+    title = "PowerShell — 等待输入"
+    cwd = get_waiting_cwd(state)
+    last_output = extract_last_output_block(state) or "(无输出)"
+    last_output_lines = last_output.splitlines()
+    if len(last_output_lines) > 5:
+        last_output = "\n".join(last_output_lines[-5:])
+    if len(last_output) > 300:
+        last_output = f"{last_output[:300]}…"
     recent_text = "\n".join(state.recent_lines[-5:]) if state.recent_lines else "(无输出)"
+    cwd_line = f"**目录**: {cwd}\n" if cwd else ""
     content = (
         f"**状态**: 终端已空闲，等待输入\n"
+        f"{cwd_line}"
         f"**文件**: {transcript_path}\n"
+        f"**最后一条消息**:\n```\n{last_output}\n```\n"
         f"**最近输出**:\n```\n{recent_text}\n```"
     )
     return title, content
+
+
+def build_idle_ipc_event(state: TranscriptState, transcript_path: str) -> dict[str, Any]:
+    """把 transcript 空闲通知包装成 daemon 可接收的 IPC 事件。"""
+    title, content = format_idle_notification(state, transcript_path)
+    return {
+        "type": "transcript_idle",
+        "cwd": get_waiting_cwd(state),
+        "transcript_path": transcript_path,
+        "title": title,
+        "content": content,
+    }
 
 
 # --- PsMonitor Main Class ---
@@ -173,6 +245,7 @@ class PsMonitor:
         feishu_bot: Any = None,
         debounce_seconds: Optional[float] = None,
         notification_cooldown: float = 60.0,
+        notification_callback: Optional[Callable[[dict[str, Any]], bool]] = None,
     ) -> None:
         """初始化监控器
 
@@ -188,6 +261,7 @@ class PsMonitor:
         self.poll_interval = poll_interval
         self.idle_threshold = idle_threshold
         self.feishu_bot = feishu_bot
+        self.notification_callback = notification_callback
         self._state = TranscriptState()
         self._running = False
         self._state_manager = StateManager(
@@ -233,7 +307,7 @@ class PsMonitor:
             if not self._running:
                 break
             now = time.time()
-            if check_idle(self._state, self.idle_threshold, now):
+            if check_idle(self._state, self.idle_threshold, now) and is_waiting_for_input(self._state):
                 # Transition to IDLE (starts debounce), then check again
                 # On repeated IDLE signals, StateManager handles debounce→WAITING
                 should_notify = self._state_manager.transition(SessionState.IDLE, now=now)
@@ -242,7 +316,17 @@ class PsMonitor:
 
     def _on_idle_detected(self) -> None:
         """空闲检测回调"""
-        title, content = format_idle_notification(self._state, self.transcript_path)
+        event = build_idle_ipc_event(self._state, self.transcript_path)
+        if self.notification_callback is not None:
+            try:
+                if self.notification_callback(event):
+                    logger.info("Idle notification delivered via callback")
+                    return
+            except Exception as e:
+                logger.warning("Idle notification callback failed: %s", e)
+
+        title = str(event["title"])
+        content = str(event["content"])
         if self.feishu_bot:
             self.feishu_bot.send_card(title, content)
             logger.info("Idle notification sent")

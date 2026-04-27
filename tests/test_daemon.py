@@ -172,6 +172,74 @@ def test_handle_hook_event_copilot_ask_user_question_not_suppressed_while_waitin
     assert second["notified"] is True
 
 
+def test_handle_hook_event_copilot_post_tool_use_stays_running_without_notification() -> None:
+    d = make_daemon()
+    first = d._handle_pipe_event(
+        {
+            "type": "hook_event",
+            "session_id": "copilot:/project",
+            "cwd": "E:\\repo",
+            "event_name": "UserPromptSubmittedEvent",
+            "title": "Copilot CLI — 用户提交",
+            "content": "提示",
+            "notify_role": "running",
+        }
+    )
+    second = d._handle_pipe_event(
+        {
+            "type": "hook_event",
+            "session_id": "copilot:/project",
+            "cwd": "E:\\repo",
+            "event_name": "PostToolUseEvent",
+            "title": "Copilot CLI — 工具完成",
+            "content": "工具: report_intent",
+            "notify_role": "running",
+        }
+    )
+    assert first["notified"] is False
+    assert second["ok"] is True
+    assert second["notified"] is False
+
+
+def test_transcript_idle_event_routes_to_matching_copilot_session() -> None:
+    d = make_daemon()
+    first = d._handle_pipe_event(
+        {
+            "type": "hook_event",
+            "session_id": "copilot:E:\\repo",
+            "cwd": "E:\\repo",
+            "event_name": "UserPromptSubmittedEvent",
+            "title": "Copilot CLI — 用户提交",
+            "content": "提示",
+            "notify_role": "running",
+        }
+    )
+    second = d._handle_pipe_event(
+        {
+            "type": "transcript_idle",
+            "cwd": "E:\\repo",
+            "title": "PowerShell — 等待输入",
+            "content": "最近输出",
+        }
+    )
+    assert first["notified"] is False
+    assert second["ok"] is True
+    assert second["notified"] is True
+    assert d._token_router.lookup(second["token"]) == "copilot:E:\\repo"
+
+
+def test_transcript_idle_event_without_matching_session_returns_no_session() -> None:
+    d = make_daemon()
+    resp = d._handle_pipe_event(
+        {
+            "type": "transcript_idle",
+            "cwd": "E:\\repo",
+            "title": "PowerShell — 等待输入",
+            "content": "最近输出",
+        }
+    )
+    assert resp == {"ok": True, "notified": False, "reason": "no_session"}
+
 
 
 

@@ -1,7 +1,6 @@
 """CLI 测试"""
 
-from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
@@ -127,4 +126,73 @@ def test_status_shows_wt_session_when_tab_unknown() -> None:
     assert "tab=?" in result.output
     assert "wt=wt-guid-" in result.output
     assert "hwnd=999" in result.output
+
+
+def test_monitor_passes_daemon_notification_callback() -> None:
+    runner = CliRunner()
+    config = {
+        "powershell": {"transcript_path": "C:\\trace.txt"},
+        "feishu": {},
+        "state": {},
+    }
+    monitor_instance = MagicMock()
+    monitor_cls = MagicMock(return_value=monitor_instance)
+    with patch("cmd_monitor.cli.load_config", return_value=config), patch(
+        "cmd_monitor.ps_monitor.PsMonitor",
+        monitor_cls,
+    ), patch(
+        "cmd_monitor.ipc.send_event",
+        return_value={"ok": True, "notified": True},
+    ):
+        result = runner.invoke(main, ["monitor"])
+
+    assert result.exit_code == 0
+    callback = monitor_cls.call_args.kwargs["notification_callback"]
+    assert callback({"type": "transcript_idle"}) is True
+
+
+def test_monitor_daemon_callback_treats_suppressed_as_handled() -> None:
+    runner = CliRunner()
+    config = {
+        "powershell": {"transcript_path": "C:\\trace.txt"},
+        "feishu": {},
+        "state": {},
+    }
+    monitor_instance = MagicMock()
+    monitor_cls = MagicMock(return_value=monitor_instance)
+    with patch("cmd_monitor.cli.load_config", return_value=config), patch(
+        "cmd_monitor.ps_monitor.PsMonitor",
+        monitor_cls,
+    ), patch(
+        "cmd_monitor.ipc.send_event",
+        return_value={"ok": True, "notified": False, "reason": "suppressed"},
+    ):
+        result = runner.invoke(main, ["monitor"])
+
+    assert result.exit_code == 0
+    callback = monitor_cls.call_args.kwargs["notification_callback"]
+    assert callback({"type": "transcript_idle"}) is True
+
+
+def test_monitor_daemon_callback_falls_back_when_no_matching_session() -> None:
+    runner = CliRunner()
+    config = {
+        "powershell": {"transcript_path": "C:\\trace.txt"},
+        "feishu": {},
+        "state": {},
+    }
+    monitor_instance = MagicMock()
+    monitor_cls = MagicMock(return_value=monitor_instance)
+    with patch("cmd_monitor.cli.load_config", return_value=config), patch(
+        "cmd_monitor.ps_monitor.PsMonitor",
+        monitor_cls,
+    ), patch(
+        "cmd_monitor.ipc.send_event",
+        return_value={"ok": True, "notified": False, "reason": "no_session"},
+    ):
+        result = runner.invoke(main, ["monitor"])
+
+    assert result.exit_code == 0
+    callback = monitor_cls.call_args.kwargs["notification_callback"]
+    assert callback({"type": "transcript_idle"}) is False
 

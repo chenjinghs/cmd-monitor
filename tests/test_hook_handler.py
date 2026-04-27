@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 from cmd_monitor.hook_handler import (
     AskUserQuestionEvent,
+    CopilotAskUserQuestionEvent,
     ErrorOccurredEvent,
     HookEvent,
     NotificationEvent,
@@ -503,6 +504,26 @@ def test_copilot_parse_pre_tool_use_ask_user_question() -> None:
     assert event.options == [{"label": "继续"}, {"label": "停止"}]
 
 
+def test_copilot_parse_pre_tool_use_functions_ask_user_with_choices() -> None:
+    data = {
+        "hook_event_name": "preToolUse",
+        "cwd": "/project",
+        "toolName": "functions.ask_user",
+        "toolArgs": json.dumps(
+            {
+                "question": "下一步做什么？",
+                "choices": ["继续修复", "先看日志"],
+                "allow_freeform": True,
+            },
+            ensure_ascii=False,
+        ),
+    }
+    event = parse_copilot_hook_input(json.dumps(data, ensure_ascii=False))
+    assert event.__class__.__name__ == "CopilotAskUserQuestionEvent"
+    assert event.question == "下一步做什么？"
+    assert event.options == [{"label": "继续修复"}, {"label": "先看日志"}]
+
+
 def test_copilot_parse_post_tool_use_ask_user_question() -> None:
     data = {
         "hook_event_name": "postToolUse",
@@ -520,6 +541,41 @@ def test_copilot_parse_post_tool_use_ask_user_question() -> None:
     assert event.__class__.__name__ == "CopilotAskUserQuestionEvent"
     assert event.question == "确认继续吗？"
 
+
+def test_copilot_parse_post_tool_use_structured_result() -> None:
+    data = {
+        "hook_event_name": "postToolUse",
+        "cwd": "/project",
+        "toolName": "bash",
+        "toolResult": {
+            "resultType": "success",
+            "textResultForLlm": "All tests passed (15/15)",
+        },
+    }
+    event = parse_copilot_hook_input(json.dumps(data, ensure_ascii=False))
+    assert isinstance(event, PostToolUseEvent)
+    assert event.tool_result == "success"
+    assert event.final_message == "All tests passed (15/15)"
+
+
+def test_copilot_parse_post_tool_use_ask_user_with_choices_and_final_message() -> None:
+    data = {
+        "hook_event_name": "postToolUse",
+        "cwd": "/project",
+        "toolName": "functions.ask_user",
+        "toolResult": {
+            "question": "下一步做什么？",
+            "choices": ["继续", "停止"],
+            "textResultForLlm": "请先在继续和停止之间选择。",
+        },
+    }
+    event = parse_copilot_hook_input(json.dumps(data, ensure_ascii=False))
+    assert event.__class__.__name__ == "CopilotAskUserQuestionEvent"
+    assert event.question == "下一步做什么？"
+    assert event.options == [{"label": "继续"}, {"label": "停止"}]
+    assert event.final_message == "请先在继续和停止之间选择。"
+
+
 def test_copilot_parse_error_occurred() -> None:
     data = {
         "hook_event_name": "errorOccurred",
@@ -532,6 +588,19 @@ def test_copilot_parse_error_occurred() -> None:
     assert isinstance(event, ErrorOccurredEvent)
     assert event.error == "Connection timeout"
     assert event.recoverable is True
+
+
+def test_copilot_parse_error_occurred_with_object_payload() -> None:
+    data = {
+        "hook_event_name": "errorOccurred",
+        "cwd": "/project",
+        "error": {"name": "TimeoutError", "message": "Connection timeout"},
+        "recoverable": False,
+    }
+    event = parse_copilot_hook_input(json.dumps(data, ensure_ascii=False))
+    assert isinstance(event, ErrorOccurredEvent)
+    assert event.error == "Connection timeout"
+    assert event.final_message == "Connection timeout"
 
 
 def test_copilot_parse_invalid_json() -> None:
@@ -575,6 +644,55 @@ def test_copilot_format_ask_user_question() -> None:
     assert "需要回答" in title
     assert "下一步做什么？" in content
     assert "继续" in content
+
+
+def test_copilot_format_ask_user_question_from_choices() -> None:
+    class_name_event = parse_copilot_hook_input(json.dumps({
+        "hook_event_name": "preToolUse",
+        "cwd": "/code",
+        "toolName": "functions.ask_user",
+        "toolArgs": json.dumps(
+            {
+                "question": "下一步做什么？",
+                "choices": ["继续", "停止"],
+                "allow_freeform": True,
+            },
+            ensure_ascii=False,
+        ),
+    }, ensure_ascii=False))
+    title, content = format_copilot_notification(class_name_event)
+    assert "需要回答" in title
+    assert "下一步做什么？" in content
+    assert "继续 / 停止" in content
+
+
+def test_copilot_format_ask_user_question_includes_final_message() -> None:
+    event = CopilotAskUserQuestionEvent(
+        cwd="/code",
+        question="下一步做什么？",
+        options=[{"label": "继续"}, {"label": "停止"}],
+        final_message="请先在继续和停止之间选择。",
+    )
+    title, content = format_copilot_notification(event)
+    assert "需要回答" in title
+    assert "下一步做什么？" in content
+    assert "继续 / 停止" in content
+    assert "补充说明" in content
+    assert "请先在继续和停止之间选择。" in content
+
+
+def test_copilot_format_post_tool_use_includes_final_message() -> None:
+    event = PostToolUseEvent(
+        cwd="/code",
+        tool_name="bash",
+        tool_result="success",
+        final_message="All tests passed (15/15)",
+    )
+    title, content = format_copilot_notification(event)
+    assert "工具完成" in title
+    assert "success" in content
+    assert "结果详情" in content
+    assert "All tests passed (15/15)" in content
 
 
 def test_copilot_format_error_occurred() -> None:
@@ -624,6 +742,46 @@ def test_copilot_handle_pre_tool_use_ask_user_question_sends_card() -> None:
     assert "下一步做什么？" in content
 
 
+def test_copilot_handle_pre_tool_use_functions_ask_user_sends_card() -> None:
+    bot = MagicMock()
+    input_json = json.dumps({
+        "hook_event_name": "preToolUse",
+        "cwd": "/project",
+        "toolName": "functions.ask_user",
+        "toolArgs": json.dumps(
+            {
+                "question": "下一步做什么？",
+                "choices": ["继续修复", "先看日志"],
+                "allow_freeform": True,
+            },
+            ensure_ascii=False,
+        ),
+    }, ensure_ascii=False)
+    exit_code = handle_copilot_hook_event(input_json, bot)
+    assert exit_code == 0
+    bot.send_card.assert_called_once()
+    title, content = bot.send_card.call_args[0]
+    assert "需要回答" in title
+    assert "下一步做什么？" in content
+    assert "继续修复 / 先看日志" in content
+
+
+def test_copilot_handle_post_tool_use_does_not_send_card_while_thinking() -> None:
+    bot = MagicMock()
+    input_json = json.dumps({
+        "hook_event_name": "postToolUse",
+        "cwd": "/project",
+        "toolName": "bash",
+        "toolResult": {
+            "resultType": "success",
+            "textResultForLlm": "All tests passed (15/15)",
+        },
+    }, ensure_ascii=False)
+    exit_code = handle_copilot_hook_event(input_json, bot)
+    assert exit_code == 0
+    bot.send_card.assert_not_called()
+
+
 def test_copilot_handle_pre_tool_use_does_not_arm_auto_reply() -> None:
     bot = MagicMock()
     auto_replier = MagicMock()
@@ -638,7 +796,7 @@ def test_copilot_handle_pre_tool_use_does_not_arm_auto_reply() -> None:
     auto_replier.arm.assert_not_called()
 
 
-def test_copilot_handle_post_tool_use_arms_auto_reply() -> None:
+def test_copilot_handle_post_tool_use_does_not_arm_auto_reply() -> None:
     bot = MagicMock()
     auto_replier = MagicMock()
     input_json = json.dumps({
@@ -649,4 +807,4 @@ def test_copilot_handle_post_tool_use_arms_auto_reply() -> None:
     })
     exit_code = handle_copilot_hook_event(input_json, bot, auto_replier=auto_replier)
     assert exit_code == 0
-    auto_replier.arm.assert_called_once()
+    auto_replier.arm.assert_not_called()

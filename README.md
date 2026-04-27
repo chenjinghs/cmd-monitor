@@ -27,6 +27,8 @@ cmd-monitor hooks install  # 安装 Claude Code / Copilot CLI hooks
 
 支持的 Copilot 事件：`sessionStart`、`sessionEnd`、`userPromptSubmitted`、`preToolUse`、`postToolUse`、`errorOccurred`
 
+说明：Copilot CLI 没有 Claude Code 那种 `Stop` 完成事件；如果你也想收到“纯文本回答完成”的飞书卡片，需要同时启用 PowerShell transcript，并运行 `cmd-monitor monitor -t <transcript>`。monitor 会在提示符重新出现且空闲后优先把事件送进 daemon，沿用现有 token 路由。
+
 
 ## 多 tab 工作流程
 
