@@ -52,7 +52,7 @@ notification_cooldown = 60.0
 # Token 长度（hex 字符,2..8）— 卡片标题前缀 [xxxx]
 token_length = 4
 # 飞书回复无 token 前缀时,是否回退到最近活跃的 session
-fallback_to_last_active = true
+fallback_to_last_active = false
 # 会话 TTL(秒) — 超过此时间无活动的 session 自动清理
 session_ttl = 1800
 
@@ -62,7 +62,7 @@ enabled = true
 # hook 配置文件路径（.claude/settings.json）
 config_path = ".claude/settings.json"
 # 监听的事件类型
-events = ["Notification", "Stop", "PreToolUse"]
+events = ["Notification", "Stop", "PreToolUse", "SessionStart", "UserPromptSubmit"]
 
 [auto_reply]
 # 自动回复配置 — 超时后自动注入预设答案
