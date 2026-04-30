@@ -50,7 +50,7 @@ class Daemon:
         self._registry = SessionRegistry(ttl_seconds=float(state_cfg.get("session_ttl", 1800.0)))
         self._token_router = TokenRouter(
             token_length=int(state_cfg.get("token_length", 4)),
-            fallback_to_last_active=bool(state_cfg.get("fallback_to_last_active", True)),
+            fallback_to_last_active=bool(state_cfg.get("fallback_to_last_active", False)),
         )
         self._state = PerSessionStateManager(
             debounce_seconds=float(state_cfg.get("debounce_seconds", 10.0)),

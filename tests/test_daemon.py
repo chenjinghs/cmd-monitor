@@ -109,11 +109,10 @@ def test_feishu_reply_routes_to_correct_session() -> None:
         assert mock_inj.call_args[0][1] == "hello"
 
 
-def test_feishu_reply_unknown_token_falls_back_to_last_active() -> None:
+def test_feishu_reply_unknown_token_no_fallback() -> None:
     d = make_daemon()
     d._handle_pipe_event({"type": "hook_event", "session_id": "A", "title": "t", "content": "c"})
     d._handle_pipe_event({"type": "hook_event", "session_id": "B", "title": "t", "content": "c"})
-    # B is more recent
     with patch("cmd_monitor.daemon.inject_to_session", return_value=True) as mock_inj:
         d._handle_feishu_reply(
             FeishuMessage(
@@ -125,7 +124,7 @@ def test_feishu_reply_unknown_token_falls_back_to_last_active() -> None:
                 msg_type="text",
             )
         )
-        assert mock_inj.call_args[0][0].session_id == "B"
+        mock_inj.assert_not_called()
 
 
 def test_auto_reply_cancelled_on_user_reply() -> None:
