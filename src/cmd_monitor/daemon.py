@@ -199,7 +199,12 @@ class Daemon:
         notify_role = event.get("notify_role", "waiting")  # 'waiting'|'running'|'skip'
         if notify_role == "running":
             self._state.transition(session_id, SessionState.RUNNING)
-            return {"ok": True, "notified": False}
+            title = event.get("title", f"cmd-monitor — {event_name or 'event'}")
+            content = event.get("content", "")
+            full_title = f"[{token}] {title}"
+            if self._bot is not None:
+                self._bot.send_card(full_title, content)
+            return {"ok": True, "notified": True, "token": token}
         if notify_role == "waiting_after_running":
             self._state.transition(session_id, SessionState.RUNNING)
             should_notify = self._state.transition(session_id, SessionState.WAITING)
