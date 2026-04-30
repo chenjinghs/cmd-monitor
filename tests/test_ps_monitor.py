@@ -98,7 +98,7 @@ def test_extract_prompt_cwd() -> None:
 
 def test_waiting_prompt_detection_requires_bare_prompt() -> None:
     waiting_state = TranscriptState(recent_lines=["output", "PS E:\\repo>"])
-    running_state = TranscriptState(recent_lines=["PS E:\\repo> copilot", "thinking..."])
+    running_state = TranscriptState(recent_lines=["PS E:\\repo> claude", "thinking..."])
     assert is_waiting_for_input(waiting_state) is True
     assert get_waiting_cwd(waiting_state) == "E:\\repo"
     assert is_waiting_for_input(running_state) is False
@@ -108,7 +108,7 @@ def test_waiting_prompt_detection_requires_bare_prompt() -> None:
 def test_extract_last_output_block_returns_lines_before_waiting_prompt() -> None:
     state = TranscriptState(
         recent_lines=[
-            "PS E:\\repo> copilot",
+            "PS E:\\repo> claude",
             "第一行",
             "第二行",
             "PS E:\\repo>",

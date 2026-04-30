@@ -116,7 +116,7 @@ def test_force_foreground_needs_switch(
     mock_time: MagicMock, mock_user32: MagicMock
 ) -> None:
     """需要切换窗口时使用 Alt-key trick"""
-    mock_user32.GetForegroundWindow.side_effect = [0, 12345]
+    mock_user32.GetForegroundWindow.side_effect = [0, 12345, 12345]
     result = force_foreground(12345)
     assert result is True
     mock_user32.ShowWindow.assert_called_once()
@@ -133,11 +133,11 @@ def test_inject_text_empty_text() -> None:
 
 
 @patch("cmd_monitor.input_injector.force_foreground")
-def test_inject_text_no_window(mock_fg: MagicMock) -> None:
-    """窗口不可用时返回 False"""
+def test_inject_text_fallback_when_not_foreground(mock_fg: MagicMock) -> None:
+    """前台切换失败时仍尝试注入（fallback 逻辑）"""
     mock_fg.return_value = False
     result = inject_text(12345, "test")
-    assert result is False
+    assert result is True
 
 
 @patch("cmd_monitor.input_injector._set_clipboard_text")

@@ -105,6 +105,44 @@ def test_transition_same_state_suppressed() -> None:
     assert sm.state == SessionState.RUNNING
 
 
+def test_transition_waiting_to_waiting_cooldown_active_suppresses() -> None:
+    """WAITING→WAITING：冷却期内抑制"""
+    sm = StateManager(debounce_seconds=5.0, notification_cooldown=60.0)
+    sm.transition(SessionState.IDLE, now=100.0)
+    sm.transition(SessionState.IDLE, now=110.0)  # → WAITING, notified at 110
+    assert sm.state == SessionState.WAITING
+    # 冷却期内再次 WAITING
+    result = sm.transition(SessionState.WAITING, now=120.0)
+    assert result is False
+    assert sm.state == SessionState.WAITING
+
+
+def test_transition_waiting_to_waiting_cooldown_expired_notifies() -> None:
+    """WAITING→WAITING：冷却期过后允许再次通知"""
+    sm = StateManager(debounce_seconds=5.0, notification_cooldown=60.0)
+    sm.transition(SessionState.IDLE, now=100.0)
+    sm.transition(SessionState.IDLE, now=110.0)  # → WAITING, notified at 110
+    assert sm.state == SessionState.WAITING
+    # 冷却期过后再次 WAITING
+    result = sm.transition(SessionState.WAITING, now=180.0)
+    assert result is True
+    assert sm.state == SessionState.WAITING
+    assert sm.current_state.last_notification_time == 180.0
+
+
+def test_transition_waiting_to_waiting_updates_state() -> None:
+    """WAITING→WAITING 成功时更新状态时间戳"""
+    sm = StateManager(debounce_seconds=5.0, notification_cooldown=10.0)
+    sm.transition(SessionState.IDLE, now=100.0)
+    sm.transition(SessionState.IDLE, now=110.0)  # → WAITING, notified at 110
+    assert sm.current_state.last_state_change == 110.0
+    # 冷却期过后再次 WAITING
+    result = sm.transition(SessionState.WAITING, now=130.0)
+    assert result is True
+    assert sm.current_state.last_state_change == 130.0
+    assert sm.current_state.last_notification_time == 130.0
+
+
 def test_transition_waiting_to_running_resets() -> None:
     """WAITING→RUNNING：重置，不通知"""
     sm = StateManager(debounce_seconds=10.0, notification_cooldown=0.0)
@@ -120,13 +158,11 @@ def test_transition_notification_cooldown_suppresses() -> None:
     """通知冷却期内重复通知被抑制"""
     sm = StateManager(debounce_seconds=5.0, notification_cooldown=60.0)
     sm.transition(SessionState.IDLE, now=100.0)
-    result1 = sm.transition(SessionState.IDLE, now=110.0)  # debounce expired
+    result1 = sm.transition(SessionState.IDLE, now=110.0)  # debounce expired → WAITING
     assert result1 is True
     assert sm.state == SessionState.WAITING
-    # 重置后再来一轮
-    sm.transition(SessionState.RUNNING, now=120.0)
-    sm.transition(SessionState.IDLE, now=130.0)
-    result2 = sm.transition(SessionState.IDLE, now=140.0)  # debounce expired, but cooldown active
+    # 仍在 WAITING 状态下再次 WAITING — 冷却期内应被抑制
+    result2 = sm.transition(SessionState.WAITING, now=120.0)
     assert result2 is False  # 冷却期内，抑制
 
 
@@ -134,10 +170,9 @@ def test_transition_notification_after_cooldown() -> None:
     """冷却期过后可以再次通知"""
     sm = StateManager(debounce_seconds=5.0, notification_cooldown=60.0)
     sm.transition(SessionState.IDLE, now=100.0)
-    sm.transition(SessionState.IDLE, now=110.0)  # → WAITING, notified
-    sm.transition(SessionState.RUNNING, now=120.0)
-    sm.transition(SessionState.IDLE, now=200.0)
-    result = sm.transition(SessionState.IDLE, now=210.0)  # cooldown passed
+    sm.transition(SessionState.IDLE, now=110.0)  # → WAITING, notified at 110
+    # 冷却期过后再次 WAITING（不经过 RUNNING，避免重置冷却）
+    result = sm.transition(SessionState.WAITING, now=180.0)  # 70s passed, cooldown expired
     assert result is True
 
 

@@ -62,15 +62,7 @@ enabled = true
 # hook 配置文件路径（.claude/settings.json）
 config_path = ".claude/settings.json"
 # 监听的事件类型
-events = ["Notification", "Stop", "PermissionRequest"]
-
-[hooks.copilot]
-# GitHub Copilot CLI hooks 配置
-enabled = true
-# hook 配置文件路径（.github/hooks/）
-config_dir = ".github/hooks"
-# 监听的事件类型
-events = ["sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse"]
+events = ["Notification", "Stop", "PreToolUse"]
 
 [auto_reply]
 # 自动回复配置 — 超时后自动注入预设答案

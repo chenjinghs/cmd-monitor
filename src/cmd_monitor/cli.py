@@ -132,10 +132,7 @@ def status(ctx: click.Context) -> None:
 def doctor(ctx: click.Context) -> None:
     """自检基础链路状态"""
     from cmd_monitor.daemon import is_alive, read_pid
-    from cmd_monitor.hook_installer import (
-        claude_hooks_are_configured,
-        copilot_hooks_are_configured,
-    )
+    from cmd_monitor.hook_installer import claude_hooks_are_configured
     from cmd_monitor.ipc import send_event
 
     config = ctx.obj["config"]
@@ -174,22 +171,7 @@ def doctor(ctx: click.Context) -> None:
     else:
         click.echo("[ok] Claude hooks disabled")
 
-    copilot_config = config.get("hooks", {}).get("copilot", {})
-    copilot_enabled = bool(copilot_config.get("enabled", True))
-    copilot_ok = True
-    if copilot_enabled:
-        copilot_ok = copilot_hooks_are_configured(
-            config_dir=copilot_config.get("config_dir"),
-            events=copilot_config.get("events"),
-        )
-        if copilot_ok:
-            click.echo("[ok] Copilot hooks configured")
-        else:
-            click.echo("[fail] Copilot hooks not configured")
-    else:
-        click.echo("[ok] Copilot hooks disabled")
-
-    if not all((daemon_alive, ipc_ok, claude_ok, copilot_ok)):
+    if not all((daemon_alive, ipc_ok, claude_ok)):
         sys.exit(1)
 
 
@@ -197,7 +179,7 @@ def doctor(ctx: click.Context) -> None:
 @click.option(
     "--event",
     required=True,
-    help="Hook event name (Notification, Stop, PermissionRequest, AskUserQuestion, PreToolUse)",
+    help="Hook event name (Notification, Stop, PreToolUse)",
 )
 @click.pass_context
 def hook_handler(ctx: click.Context, event: str) -> None:
@@ -218,30 +200,6 @@ def hook_handler(ctx: click.Context, event: str) -> None:
     _send_to_daemon(payload)
     sys.exit(0)
 
-
-@main.command("copilot-hook-handler")
-@click.option(
-    "--event",
-    required=True,
-    help="Hook event (sessionStart, sessionEnd, userPromptSubmitted, preToolUse, postToolUse, errorOccurred)",
-)
-@click.pass_context
-def copilot_hook_handler(ctx: click.Context, event: str) -> None:
-    """处理 copilot-cli hook 事件（内部命令）"""
-    from cmd_monitor.hook_handler import build_copilot_ipc_event
-
-    input_json = sys.stdin.read().strip()
-    if not input_json:
-        click.echo("No input received", err=True)
-        sys.exit(0)
-
-    payload = build_copilot_ipc_event(input_json, fallback_event_name=event)
-    if payload is None:
-        sys.exit(0)
-
-    _augment_with_terminal_context(payload)
-    _send_to_daemon(payload)
-    sys.exit(0)
 
 
 def _augment_with_terminal_context(payload: dict) -> None:
@@ -280,7 +238,7 @@ def _send_to_daemon(payload: dict) -> None:
 @click.option(
     "--type",
     "hook_type",
-    type=click.Choice(["claude", "copilot", "all"]),
+    type=click.Choice(["claude"]),
     default="all",
     help="安装哪种 hooks",
 )
@@ -292,7 +250,7 @@ def hooks(
     hook_type: str,
 ) -> None:
     """管理 hooks"""
-    from cmd_monitor.hook_installer import install_copilot_hooks, install_hooks
+    from cmd_monitor.hook_installer import install_hooks
 
     if action == "install":
         config = ctx.obj["config"]
@@ -305,15 +263,6 @@ def hooks(
             else:
                 click.echo("Claude Code hooks 安装失败", err=True)
 
-        if hook_type in ("copilot", "all"):
-            copilot_config = config.get("hooks", {}).get("copilot", {})
-            events = copilot_config.get("events")
-            config_dir = copilot_config.get("config_dir")
-            success = install_copilot_hooks(config_dir=config_dir, events=events)
-            if success:
-                click.echo("copilot-cli hooks 已安装")
-            else:
-                click.echo("copilot-cli hooks 安装失败", err=True)
 
 
 @main.command()

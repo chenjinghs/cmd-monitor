@@ -151,8 +151,6 @@ class Daemon:
         etype = event.get("type", "")
         if etype == "hook_event":
             return self._handle_hook_event(event)
-        if etype == "transcript_idle":
-            return self._handle_transcript_idle_event(event)
         if etype == "ping":
             return {"ok": True, "pid": os.getpid(), "sessions": len(self._registry.all_sessions())}
         if etype == "status":
@@ -176,39 +174,6 @@ class Daemon:
             }
         logger.warning("Unknown pipe event type: %s", etype)
         return {"ok": False, "error": f"unknown type {etype}"}
-
-    def _find_copilot_session_by_cwd(self, cwd: str) -> Optional[SessionInfo]:
-        if not cwd:
-            return None
-        matches = [
-            info
-            for info in self._registry.all_sessions()
-            if info.session_id.startswith("copilot:") and info.cwd == cwd
-        ]
-        if not matches:
-            return None
-        return max(matches, key=lambda info: info.last_active_at)
-
-    def _handle_transcript_idle_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        cwd = str(event.get("cwd", "") or "")
-        session = self._find_copilot_session_by_cwd(cwd)
-        if session is None:
-            return {"ok": True, "notified": False, "reason": "no_session"}
-
-        title = str(event.get("title") or "")
-        if session.session_id.startswith("copilot:"):
-            title = "Copilot CLI — 文本完成"
-        return self._handle_hook_event(
-            {
-                "type": "hook_event",
-                "session_id": session.session_id,
-                "cwd": session.cwd or cwd,
-                "event_name": "TranscriptIdle",
-                "title": title or "PowerShell — 等待输入",
-                "content": str(event.get("content") or ""),
-                "notify_role": "waiting",
-            }
-        )
 
     def _handle_hook_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
         session_id = event.get("session_id", "")
@@ -262,6 +227,10 @@ class Daemon:
             self._bot.send_card(full_title, content)
         if self._auto_reply is not None:
             self._auto_reply.arm(session_id)
+
+        # Stop 事件表示任务完成，重置状态以便下一轮对话能正常发卡片
+        if event_name == "Stop":
+            self._state.transition(session_id, SessionState.RUNNING)
 
         return {"ok": True, "notified": True, "token": token}
 

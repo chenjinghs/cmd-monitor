@@ -1,6 +1,6 @@
 # cmd-monitor 使用文档
 
-终端监控 + 飞书双向通信工具。监控 Windows PowerShell 中运行的 AI CLI 工具（Claude Code、GitHub Copilot CLI），在它们停止等待输入时通过飞书发送通知，回复指令后自动注入终端。
+终端监控 + 飞书双向通信工具。监控 Windows PowerShell 中运行的 Claude Code，在它们停止等待输入时通过飞书发送通知，回复指令后自动注入终端。
 
 **v0.2 新增:** 多 Windows Terminal tab 支持 — 通过 daemon + 短 token 路由,飞书回复能精确送达原始 tab。
 
@@ -149,12 +149,7 @@ enabled = true
 [hooks.claude]
 enabled = true
 config_path = ".claude/settings.json"           # Claude Code hook 配置路径
-events = ["Notification", "Stop", "PermissionRequest", "AskUserQuestion"]
-
-[hooks.copilot]
-enabled = true
-config_dir = ".github/hooks"                    # copilot-cli hook 配置目录
-events = ["sessionStart", "sessionEnd", "userPromptSubmitted", "preToolUse", "postToolUse", "errorOccurred"]
+events = ["Notification", "Stop", "PreToolUse"]
 ```
 
 ### `[state]` — 状态管理
@@ -179,22 +174,14 @@ pip install -e .
 ### 步骤 2：安装 Hook（一次性）
 
 ```bash
-# 安装所有 hooks（Claude Code + copilot-cli）
+# 安装 Claude Code hooks
 cmd-monitor hooks install
-
-# 仅安装 Claude Code hooks
-cmd-monitor hooks install --type claude
-
-# 仅安装 copilot-cli hooks
-cmd-monitor hooks install --type copilot
 ```
 
 此命令会：
-- 将 PowerShell hook 脚本写入 `.claude/settings.json`（Claude Code）
-- 将 hook 配置写入 `.github/hooks/hooks.json`（copilot-cli）
-- 每个 hook 事件触发时调用 `cmd-monitor hook-handler` 或 `cmd-monitor copilot-hook-handler`
-- Claude 默认安装事件：`Notification`、`Stop`、`PermissionRequest`、`AskUserQuestion`
-- Copilot 默认安装事件：`sessionStart`、`sessionEnd`、`userPromptSubmitted`、`preToolUse`、`postToolUse`、`errorOccurred`
+- 将 PowerShell hook 脚本写入 `.claude/settings.json`
+- 每个 hook 事件触发时调用 `cmd-monitor hook-handler`
+- 默认安装事件：`Notification`、`Stop`、`PreToolUse`
 
 ### 步骤 3：启动守护进程
 
@@ -209,7 +196,7 @@ cmd-monitor start
 
 ### 步骤 4：正常使用
 
-1. 在 PowerShell 中启动 Claude Code 或 copilot-cli
+1. 在 PowerShell 中启动 Claude Code
 2. 离开电脑
 3. AI 停止等待时 → 飞书收到通知卡片
 4. 在飞书中回复指令 → 自动注入 PowerShell 终端
@@ -246,7 +233,7 @@ cmd-monitor hooks install [OPTIONS]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--type` | `all` | 安装哪种 hooks：`claude`、`copilot`、`all` |
+| `--type` | `claude` | 安装哪种 hooks：`claude` |
 | `--config-path` | 自动 | 覆盖默认配置路径 |
 
 ### `cmd-monitor hook-handler` — Claude Code Hook 处理（内部）
@@ -257,19 +244,9 @@ echo '{"hook_event_name":"Stop","session_id":"xxx","cwd":"/path"}' | cmd-monitor
 
 | 选项 | 必填 | 说明 |
 |------|------|------|
-| `--event` | 是 | 事件名：`Notification`、`Stop`、`PermissionRequest` |
+| `--event` | 是 | 事件名：`Notification`、`Stop`、`PreToolUse` |
 
 此命令由 Claude Code hook 自动调用，通常无需手动执行。
-
-### `cmd-monitor copilot-hook-handler` — copilot-cli Hook 处理（内部）
-
-```bash
-echo '{"hook_event_name":"postToolUse","toolName":"bash"}' | cmd-monitor copilot-hook-handler --event postToolUse
-```
-
-| 选项 | 必填 | 说明 |
-|------|------|------|
-| `--event` | 是 | 事件名：`sessionStart`、`sessionEnd`、`userPromptSubmitted`、`preToolUse`、`postToolUse`、`errorOccurred` |
 
 ### `cmd-monitor monitor` — Transcript 监控
 
@@ -294,11 +271,10 @@ cmd-monitor monitor --transcript "C:\Users\you\Documents\PowerShell_transcript.l
 |------|----------|----------|
 | `Notification` | Claude 需要输入/提示 | Claude Code — 需要输入 |
 | `Stop` | Claude 完成响应 | Claude Code — 已停止 |
-| `PermissionRequest` | 权限对话框出现 | Claude Code — 权限请求 |
-| `AskUserQuestion` | Claude 主动向用户提问 | Claude Code — 需要回答 |
+| `PreToolUse` (AskUserQuestion) | Claude 主动向用户提问 | Claude Code — 需要回答 |
 
 **实测说明：**
-- `AskUserQuestion`、`PermissionRequest`、`Stop` 已在真实联调中稳定观测到。
+- `PreToolUse` (tool_name=AskUserQuestion)、`Stop` 已在真实联调中稳定观测到。
 - 普通文本追问/澄清在当前环境下通常只会落到 `Stop`，不会稳定触发 `Notification`。
 - 因此不要把 `Notification` 当作“所有等待用户输入”场景的统一事件。
 
@@ -311,27 +287,9 @@ Claude Code 触发事件
   → 通过飞书发送通知卡片
 ```
 
-### 模式 2：copilot-cli Hook
+### 模式 2：PowerShell Transcript 监控（通用）
 
-利用 GitHub Copilot CLI 原生 hook 系统。
-
-**支持的事件：**
-| 事件 | 触发时机 | 通知标题 |
-|------|----------|----------|
-| `sessionStart` | 会话开始/恢复 | Copilot CLI — 会话开始 |
-| `sessionEnd` | 会话结束 | Copilot CLI — 会话结束 |
-| `userPromptSubmitted` | 用户提交 prompt | Copilot CLI — 用户提交 |
-| `preToolUse` | 工具执行前 | Copilot CLI — 工具调用 |
-| `postToolUse` | 工具执行后 | Copilot CLI — 工具完成 |
-| `errorOccurred` | 错误发生 | Copilot CLI — 错误 |
-
-**限制说明：**
-- Copilot CLI 当前没有 Claude Code `Stop` 那种“最终文本回答完成”hook。
-- 如果希望 Copilot **只输出文本、没有工具调用** 时也推送飞书，需要叠加下面的 transcript 监控模式。
-
-### 模式 3：PowerShell Transcript 监控（通用）
-
-通过 `Start-Transcript` 记录终端输出，检测空闲状态。适用于任意 CLI 工具，也可补足 Copilot CLI 缺少“文本回答完成”hook 的问题。
+通过 `Start-Transcript` 记录终端输出，检测空闲状态。适用于任意 CLI 工具。
 
 ```bash
 # 在 PowerShell 中启动 transcript
@@ -341,7 +299,7 @@ Start-Transcript -Path "C:\transcripts\session.log"
 cmd-monitor monitor -t "C:\transcripts\session.log"
 ```
 
-当 daemon 正在运行且 registry 里已有同 cwd 的 Copilot session 时，`monitor` 会优先把 transcript 空闲事件送给 daemon，飞书卡片仍会带原来的 `[token]` 前缀；找不到匹配 session 时，再回退为 monitor 直接发卡片。
+当 daemon 正在运行时，`monitor` 会优先把 transcript 空闲事件送给 daemon，飞书卡片会带 `[token]` 前缀；找不到匹配 session 时，再回退为 monitor 直接发卡片。
 
 **工作原理：**
 ```
@@ -483,15 +441,14 @@ MVP 版本仅支持 Windows PowerShell。指令注入依赖 Win32 API（`user32.
 ┌─────────────────────────────────────────────────┐
 │                  Windows Host                    │
 │                                                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │ Claude   │  │copilot-  │  │   cmd-monitor │  │
-│  │ Code     │  │cli       │  │   daemon      │  │
-│  │(PowerShl)│  │(PowerShl)│  │               │  │
-│  └────┬─────┘  └────┬─────┘  │ ┌───────────┐ │  │
-│       │              │        │ │Hook Monitor│ │  │
-│       └──────────────┼───────▶│ │(Claude +   │ │  │
-│       hooks/json     │hooks/  │ │copilot)    │ │  │
-│                      │json    │ └─────┬─────┘ │  │
+│  ┌──────────┐              ┌──────────────┐  │
+│  │ Claude   │              │   cmd-monitor │  │
+│  │ Code     │              │   daemon      │  │
+│  │(PowerShl)│              │               │  │
+│  └────┬─────┘              │ ┌───────────┐ │  │
+│       │                    │ │Hook Monitor│ │  │
+│       └───────────────────▶│ │(Claude)    │ │  │
+│       hooks/json           │ └─────┬─────┘ │  │
 │  ┌───────────────────┘        │       │       │  │
 │  │                          │ ┌───────▼─────┐ │  │
 │  │  PowerShell Transcript   │ │PS Monitor  │ │  │

@@ -11,7 +11,6 @@ DEFAULT_CONFIG = {
     "general": {"pid_file": "cmd-monitor.pid"},
     "hooks": {
         "claude": {"config_path": ".claude/settings.json"},
-        "copilot": {"config_dir": ".github/hooks"},
     },
 }
 
@@ -56,7 +55,7 @@ def test_hook_handler_help() -> None:
     result = runner.invoke(main, ["hook-handler", "--help"])
     assert result.exit_code == 0
     assert "--event" in result.output
-    assert "AskUserQuestion" in result.output
+    assert "PreToolUse" in result.output
 
 
 def test_hooks_install_help() -> None:
@@ -65,14 +64,6 @@ def test_hooks_install_help() -> None:
     assert result.exit_code == 0
     assert "install" in result.output
     assert "--type" in result.output
-
-
-def test_copilot_hook_handler_help() -> None:
-    runner = CliRunner()
-    result = runner.invoke(main, ["copilot-hook-handler", "--help"])
-    assert result.exit_code == 0
-    assert "--event" in result.output
-    assert "sessionStart" in result.output
 
 
 def test_doctor_reports_all_checks_happy_path() -> None:
@@ -85,9 +76,6 @@ def test_doctor_reports_all_checks_happy_path() -> None:
     ), patch(
         "cmd_monitor.hook_installer.claude_hooks_are_configured",
         return_value=True,
-    ), patch(
-        "cmd_monitor.hook_installer.copilot_hooks_are_configured",
-        return_value=True,
     ):
         result = runner.invoke(main, ["doctor"])
 
@@ -95,9 +83,6 @@ def test_doctor_reports_all_checks_happy_path() -> None:
     assert "[ok] daemon alive (pid=43324)" in result.output
     assert "[ok] IPC reachable" in result.output
     assert "[ok] Claude hooks configured" in result.output
-    assert "[ok] Copilot hooks configured" in result.output
-
-
 
 
 def test_status_shows_wt_session_when_tab_unknown() -> None:
@@ -195,4 +180,3 @@ def test_monitor_daemon_callback_falls_back_when_no_matching_session() -> None:
     assert result.exit_code == 0
     callback = monitor_cls.call_args.kwargs["notification_callback"]
     assert callback({"type": "transcript_idle"}) is False
-

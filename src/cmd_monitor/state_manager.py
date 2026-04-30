@@ -83,10 +83,20 @@ class StateManager:
         now = now if now is not None else time.monotonic()
         current = self._state
 
-        # 相同状态 — 检查防抖
+        # 相同状态 — 检查防抖/冷却
         if new_state == current.state:
             if new_state == SessionState.IDLE:
                 return self._check_debounce(now)
+            if new_state == SessionState.WAITING:
+                # 新的等待请求（Claude 连续提问），冷却到期后允许再次通知
+                if self._should_send_notification(now):
+                    self._state = StateInfo(
+                        state=SessionState.WAITING,
+                        last_state_change=now,
+                        last_notification_time=now,
+                        last_notification_state=SessionState.WAITING,
+                    )
+                    return True
             return False
 
         # RUNNING → IDLE：启动防抖计时器

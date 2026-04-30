@@ -15,8 +15,9 @@ def test_load_default_config() -> None:
 
 
 def test_load_config_file_not_found() -> None:
-    with pytest.raises(FileNotFoundError):
-        load_config("/nonexistent/path.toml")
+    """文件不存在时返回空字典（允许 status/stop 在任意目录运行）"""
+    result = load_config("/nonexistent/path.toml")
+    assert result == {}
 
 
 def test_load_config_structure() -> None:

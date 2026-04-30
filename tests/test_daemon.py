@@ -5,15 +5,16 @@ from unittest.mock import MagicMock, patch
 
 from cmd_monitor.daemon import Daemon
 from cmd_monitor.feishu_client import FeishuMessage
+from cmd_monitor.state_manager import SessionState
 
 
-def make_daemon(auto_reply: bool = False) -> Daemon:
+def make_daemon(auto_reply: bool = False, notification_cooldown: float = 0.0) -> Daemon:
     cfg: dict[str, Any] = {
         "feishu": {},  # 不启 bot
         "general": {},
         "state": {
             "debounce_seconds": 0.0,
-            "notification_cooldown": 0.0,
+            "notification_cooldown": notification_cooldown,
             "token_length": 4,
         },
         "inject": {"inject_delay": 0.0, "target_window": "PowerShell"},
@@ -145,102 +146,64 @@ def test_auto_reply_cancelled_on_user_reply() -> None:
     assert fired == []  # cancel won
 
 
-def test_handle_hook_event_copilot_ask_user_question_not_suppressed_while_waiting() -> None:
+def test_stop_event_resets_state_to_running() -> None:
+    """Stop 事件发完卡片后状态应重置为 RUNNING，确保下一轮对话能正常发卡片"""
     d = make_daemon()
-    first = d._handle_pipe_event(
+    # 先发送一个 Notification 事件让状态变为 WAITING
+    d._handle_pipe_event(
         {
             "type": "hook_event",
-            "session_id": "copilot:/project",
-            "event_name": "SessionStartEvent",
-            "title": "Copilot CLI — 会话开始",
-            "content": "开始",
-            "notify_role": "running",
+            "session_id": "sess-A",
+            "event_name": "Notification",
+            "title": "需要输入",
+            "content": "问题",
+            "notify_role": "waiting",
         }
     )
-    second = d._handle_pipe_event(
-        {
-            "type": "hook_event",
-            "session_id": "copilot:/project",
-            "event_name": "CopilotAskUserQuestionEvent",
-            "title": "Copilot CLI — 需要回答",
-            "content": "问题: 继续吗?",
-            "notify_role": "waiting_after_running",
-        }
-    )
-    assert first["notified"] is False
-    assert second["ok"] is True
-    assert second["notified"] is True
+    assert d._state.state("sess-A") == SessionState.WAITING
 
-
-def test_handle_hook_event_copilot_post_tool_use_stays_running_without_notification() -> None:
-    d = make_daemon()
-    first = d._handle_pipe_event(
-        {
-            "type": "hook_event",
-            "session_id": "copilot:/project",
-            "cwd": "E:\\repo",
-            "event_name": "UserPromptSubmittedEvent",
-            "title": "Copilot CLI — 用户提交",
-            "content": "提示",
-            "notify_role": "running",
-        }
-    )
-    second = d._handle_pipe_event(
-        {
-            "type": "hook_event",
-            "session_id": "copilot:/project",
-            "cwd": "E:\\repo",
-            "event_name": "PostToolUseEvent",
-            "title": "Copilot CLI — 工具完成",
-            "content": "工具: report_intent",
-            "notify_role": "running",
-        }
-    )
-    assert first["notified"] is False
-    assert second["ok"] is True
-    assert second["notified"] is False
-
-
-def test_transcript_idle_event_routes_to_matching_copilot_session() -> None:
-    d = make_daemon()
-    first = d._handle_pipe_event(
-        {
-            "type": "hook_event",
-            "session_id": "copilot:E:\\repo",
-            "cwd": "E:\\repo",
-            "event_name": "UserPromptSubmittedEvent",
-            "title": "Copilot CLI — 用户提交",
-            "content": "提示",
-            "notify_role": "running",
-        }
-    )
-    second = d._handle_pipe_event(
-        {
-            "type": "transcript_idle",
-            "cwd": "E:\\repo",
-            "title": "PowerShell — 等待输入",
-            "content": "最近输出",
-        }
-    )
-    assert first["notified"] is False
-    assert second["ok"] is True
-    assert second["notified"] is True
-    assert d._token_router.lookup(second["token"]) == "copilot:E:\\repo"
-
-
-def test_transcript_idle_event_without_matching_session_returns_no_session() -> None:
-    d = make_daemon()
+    # 发送 Stop 事件
     resp = d._handle_pipe_event(
         {
-            "type": "transcript_idle",
-            "cwd": "E:\\repo",
-            "title": "PowerShell — 等待输入",
-            "content": "最近输出",
+            "type": "hook_event",
+            "session_id": "sess-A",
+            "event_name": "Stop",
+            "title": "已停止",
+            "content": "完成",
+            "notify_role": "waiting",
         }
     )
-    assert resp == {"ok": True, "notified": False, "reason": "no_session"}
+    assert resp["notified"] is True
+    # Stop 后状态应重置为 RUNNING
+    assert d._state.state("sess-A") == SessionState.RUNNING
 
 
+def test_waiting_to_waiting_after_cooldown_allows_notification() -> None:
+    """WAITING 状态下冷却期过后再次 WAITING 应允许发卡片"""
+    d = make_daemon(notification_cooldown=0.0)
+    # 第一次 Notification
+    r1 = d._handle_pipe_event(
+        {
+            "type": "hook_event",
+            "session_id": "sess-B",
+            "event_name": "Notification",
+            "title": "问题1",
+            "content": "内容1",
+            "notify_role": "waiting",
+        }
+    )
+    assert r1["notified"] is True
+    assert d._state.state("sess-B") == SessionState.WAITING
 
-
-
+    # 再次 Notification（同一状态）— 无冷却应允许
+    r2 = d._handle_pipe_event(
+        {
+            "type": "hook_event",
+            "session_id": "sess-B",
+            "event_name": "Notification",
+            "title": "问题2",
+            "content": "内容2",
+            "notify_role": "waiting",
+        }
+    )
+    assert r2["notified"] is True
