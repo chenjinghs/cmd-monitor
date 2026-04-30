@@ -31,6 +31,14 @@ user32.SetForegroundWindow.argtypes = [ctypes.wintypes.HWND]
 user32.GetGUIThreadInfo.argtypes = [ctypes.wintypes.DWORD, ctypes.c_void_p]
 user32.GetGUIThreadInfo.restype = ctypes.wintypes.BOOL
 user32.SetForegroundWindow.restype = ctypes.wintypes.BOOL
+user32.SwitchToThisWindow.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.BOOL]
+user32.SwitchToThisWindow.restype = None
+user32.SetWindowPos.argtypes = [
+    ctypes.wintypes.HWND, ctypes.wintypes.HWND,
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    ctypes.wintypes.UINT,
+]
+user32.SetWindowPos.restype = ctypes.wintypes.BOOL
 user32.SetActiveWindow.argtypes = [ctypes.wintypes.HWND]
 user32.SetActiveWindow.restype = ctypes.wintypes.HWND
 user32.BringWindowToTop.argtypes = [ctypes.wintypes.HWND]
@@ -208,6 +216,7 @@ def force_foreground(hwnd: int) -> bool:
 
     核心技巧: AttachThreadInput 必须附加到【当前前台窗口】的线程,
     而不是目标窗口的线程,这样才能获得"前台权限"来切换焦点。
+    增加多轮重试和多种策略,提高在复杂桌面环境下的成功率。
     """
     if not hwnd or not user32.IsWindow(hwnd):
         logger.error("hwnd is invalid or no longer exists: %s", hwnd)
@@ -216,7 +225,7 @@ def force_foreground(hwnd: int) -> bool:
     # 还原最小化
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, SW_RESTORE)
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     # Already foreground?
     if user32.GetForegroundWindow() == hwnd:
@@ -226,44 +235,67 @@ def force_foreground(hwnd: int) -> bool:
     ASFW_ANY = 0xFFFFFFFF
     user32.AllowSetForegroundWindow(ASFW_ANY)
 
-    # AttachThreadInput: 附加到【当前前台窗口】的线程,借用其前台权限
-    fg_hwnd = user32.GetForegroundWindow()
-    pid_buf = ctypes.wintypes.DWORD()
-    fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, ctypes.byref(pid_buf)) if fg_hwnd else 0
-    target_thread = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_buf))
-    current_thread = kernel32.GetCurrentThreadId()
+    # 多轮重试,每轮使用不同策略
+    HWND_TOP = 0
+    SWP_SHOWWINDOW = 0x0040
+    SWP_NOMOVE = 0x0002
+    SWP_NOSIZE = 0x0001
 
-    attached_fg = False
-    attached_target = False
-    if fg_thread and fg_thread != current_thread:
-        attached_fg = bool(user32.AttachThreadInput(current_thread, fg_thread, True))
-    if target_thread and target_thread != current_thread and target_thread != fg_thread:
-        attached_target = bool(user32.AttachThreadInput(current_thread, target_thread, True))
+    for attempt in range(3):
+        # 策略 1: AttachThreadInput + SetForegroundWindow
+        fg_hwnd = user32.GetForegroundWindow()
+        pid_buf = ctypes.wintypes.DWORD()
+        fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, ctypes.byref(pid_buf)) if fg_hwnd else 0
+        target_thread = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_buf))
+        current_thread = kernel32.GetCurrentThreadId()
 
-    try:
-        user32.BringWindowToTop(hwnd)
-        user32.SetForegroundWindow(hwnd)
-        user32.SetActiveWindow(hwnd)
-        time.sleep(0.08)
+        attached_fg = False
+        attached_target = False
+        if fg_thread and fg_thread != current_thread:
+            attached_fg = bool(user32.AttachThreadInput(current_thread, fg_thread, True))
+        if target_thread and target_thread != current_thread and target_thread != fg_thread:
+            attached_target = bool(user32.AttachThreadInput(current_thread, target_thread, True))
+
+        try:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            user32.SetActiveWindow(hwnd)
+        finally:
+            if attached_fg:
+                user32.AttachThreadInput(current_thread, fg_thread, False)
+            if attached_target:
+                user32.AttachThreadInput(current_thread, target_thread, False)
+
+        time.sleep(0.08 + attempt * 0.05)
         if user32.GetForegroundWindow() == hwnd:
             return True
-    finally:
-        if attached_fg:
-            user32.AttachThreadInput(current_thread, fg_thread, False)
-        if attached_target:
-            user32.AttachThreadInput(current_thread, target_thread, False)
 
-    # Fallback: Alt-key trick
-    user32.keybd_event(0x12, 0, 0, 0)  # Alt down
-    user32.SetForegroundWindow(hwnd)
-    user32.keybd_event(0x12, 0, 0x0002, 0)  # Alt up
-    time.sleep(0.1)
+        # 策略 2: SwitchToThisWindow (Windows 内置的切换逻辑)
+        user32.SwitchToThisWindow(hwnd, True)
+        time.sleep(0.1 + attempt * 0.05)
+        if user32.GetForegroundWindow() == hwnd:
+            return True
 
-    if user32.GetForegroundWindow() == hwnd:
-        return True
+        # 策略 3: SetWindowPos 置顶后恢复
+        user32.SetWindowPos(
+            hwnd, HWND_TOP, 0, 0, 0, 0,
+            SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE,
+        )
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.1 + attempt * 0.05)
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+
+        # 策略 4: Alt-key trick
+        user32.keybd_event(0x12, 0, 0, 0)  # Alt down
+        user32.SetForegroundWindow(hwnd)
+        user32.keybd_event(0x12, 0, 0x0002, 0)  # Alt up
+        time.sleep(0.15 + attempt * 0.05)
+        if user32.GetForegroundWindow() == hwnd:
+            return True
 
     logger.warning(
-        "force_foreground: SetForegroundWindow failed (hwnd=%s fg=%s), will try PostMessage paste",
+        "force_foreground: all attempts failed (hwnd=%s fg=%s)",
         hwnd,
         user32.GetForegroundWindow(),
     )
