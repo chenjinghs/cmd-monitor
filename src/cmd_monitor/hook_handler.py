@@ -48,7 +48,18 @@ class AskUserQuestionEvent(HookEvent):
     final_message: str = ""
 
 
+@dataclass
+class SessionStartEvent(HookEvent):
+    """SessionStart 事件 — 新会话开始"""
 
+    user_message: str = ""
+
+
+@dataclass
+class UserPromptSubmitEvent(HookEvent):
+    """UserPromptSubmit 事件 — 用户提交输入，Claude 开始执行"""
+
+    user_message: str = ""
 
 
 
@@ -130,7 +141,9 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
     cwd = data.get("cwd", "")
 
     if event_name == "Notification":
-        final_message = _read_last_assistant_message(data.get("transcript_path", ""))
+        final_message = data.get("last_assistant_message", "") or ""
+        if not final_message:
+            final_message = _read_last_assistant_message(data.get("transcript_path", ""))
         return NotificationEvent(
             session_id=session_id,
             cwd=cwd,
@@ -149,7 +162,9 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
             stop_hook_active=data.get("stop_hook_active", False),
             final_message=final_message,
         )
-    elif event_name == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
+    elif event_name == "PreToolUse":
+        if data.get("tool_name") != "AskUserQuestion":
+            return None
         tool_input = data.get("tool_input")
         if not isinstance(tool_input, dict):
             tool_input = {}
@@ -175,6 +190,20 @@ def parse_hook_input(input_json: str) -> Optional[HookEvent]:
             question=question,
             options=options,
             final_message=final_message,
+        )
+    elif event_name == "SessionStart":
+        return SessionStartEvent(
+            session_id=session_id,
+            cwd=cwd,
+            hook_event_name=event_name,
+            user_message=data.get("user_message", ""),
+        )
+    elif event_name == "UserPromptSubmit":
+        return UserPromptSubmitEvent(
+            session_id=session_id,
+            cwd=cwd,
+            hook_event_name=event_name,
+            user_message=data.get("user_message", ""),
         )
     else:
         logger.warning("Unknown hook event: %s", event_name)
@@ -233,6 +262,32 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
         options_line = f"\n**选项**: {' / '.join(option_labels)}" if option_labels else ""
         content = (
             f"**问题**: {event.question}{options_line}{msg_snippet}\n"
+            f"**目录**: {event.cwd}\n"
+            f"**会话**: {event.session_id[:8]}"
+        )
+    elif isinstance(event, SessionStartEvent):
+        title = "Claude Code — 会话开始"
+        msg_snippet = ""
+        if event.user_message:
+            snippet = event.user_message[:400]
+            if len(event.user_message) > 400:
+                snippet += "…"
+            msg_snippet = f"\n**消息**: {snippet}"
+        content = (
+            f"**状态**: 新会话启动{msg_snippet}\n"
+            f"**目录**: {event.cwd}\n"
+            f"**会话**: {event.session_id[:8]}"
+        )
+    elif isinstance(event, UserPromptSubmitEvent):
+        title = "Claude Code — 正在执行"
+        msg_snippet = ""
+        if event.user_message:
+            snippet = event.user_message[:400]
+            if len(event.user_message) > 400:
+                snippet += "…"
+            msg_snippet = f"\n**输入**: {snippet}"
+        content = (
+            f"**状态**: 用户输入已提交，开始执行{msg_snippet}\n"
             f"**目录**: {event.cwd}\n"
             f"**会话**: {event.session_id[:8]}"
         )
@@ -306,6 +361,8 @@ def build_claude_ipc_event(input_json: str) -> Optional[Dict[str, Any]]:
     notify_role = "waiting"
     if isinstance(event, AskUserQuestionEvent):
         notify_role = "waiting_after_running"
+    elif isinstance(event, (SessionStartEvent, UserPromptSubmitEvent)):
+        notify_role = "running"
     return {
         "type": "hook_event",
         "session_id": event.session_id,

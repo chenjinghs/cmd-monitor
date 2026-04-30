@@ -28,6 +28,8 @@ user32.IsWindowVisible.restype = ctypes.wintypes.BOOL
 user32.GetForegroundWindow.argtypes = []
 user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
 user32.SetForegroundWindow.argtypes = [ctypes.wintypes.HWND]
+user32.GetGUIThreadInfo.argtypes = [ctypes.wintypes.DWORD, ctypes.c_void_p]
+user32.GetGUIThreadInfo.restype = ctypes.wintypes.BOOL
 user32.SetForegroundWindow.restype = ctypes.wintypes.BOOL
 user32.SetActiveWindow.argtypes = [ctypes.wintypes.HWND]
 user32.SetActiveWindow.restype = ctypes.wintypes.HWND
@@ -96,6 +98,54 @@ class INPUT(ctypes.Structure):
 
 
 assert ctypes.sizeof(INPUT) == 40, f"INPUT struct size mismatch: {ctypes.sizeof(INPUT)} (expected 40)"
+
+
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.wintypes.DWORD),
+        ("flags", ctypes.wintypes.DWORD),
+        ("hwndActive", ctypes.wintypes.HWND),
+        ("hwndFocus", ctypes.wintypes.HWND),
+        ("hwndCapture", ctypes.wintypes.HWND),
+        ("hwndMenuOwner", ctypes.wintypes.HWND),
+        ("hwndMoveSize", ctypes.wintypes.HWND),
+        ("hwndCaret", ctypes.wintypes.HWND),
+        ("rcCaret", ctypes.wintypes.RECT),
+    ]
+
+
+def get_focus_window() -> int:
+    """获取当前前台线程中具有键盘焦点的窗口句柄。"""
+    gti = GUITHREADINFO()
+    gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+    fg = user32.GetForegroundWindow()
+    if not fg:
+        return 0
+    pid = ctypes.wintypes.DWORD()
+    tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+    if user32.GetGUIThreadInfo(tid, ctypes.byref(gti)):
+        return int(gti.hwndFocus)
+    return 0
+
+
+def get_window_info(hwnd: int) -> tuple[str, str]:
+    """获取窗口的类名和标题。"""
+    if not hwnd or not user32.IsWindow(hwnd):
+        return ("", "")
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, buf, 256)
+        cls = buf.value
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length > 0:
+            title_buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, title_buf, length + 1)
+            title = title_buf.value
+        else:
+            title = ""
+        return (cls, title)
+    except Exception:
+        return ("", "")
 
 
 # --- Window Finding ---
@@ -233,6 +283,30 @@ def _send_key(vk: int, key_down: bool = True) -> None:
     user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
 
+def _send_unicode_char(code: int, key_down: bool = True) -> None:
+    """发送单个 Unicode 字符（绕过剪贴板）"""
+    inp = INPUT()
+    inp.type = INPUT_KEYBOARD
+    inp.union.ki.wVk = 0
+    inp.union.ki.wScan = code
+    flags = KEYEVENTF_UNICODE
+    if not key_down:
+        flags |= KEYEVENTF_KEYUP
+    inp.union.ki.dwFlags = flags
+    user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+
+
+def inject_text_unicode(text: str) -> bool:
+    """使用 KEYEVENTF_UNICODE 逐字符输入文本（不经过剪贴板）"""
+    if not text:
+        return False
+    for ch in text:
+        code = ord(ch)
+        _send_unicode_char(code, key_down=True)
+        _send_unicode_char(code, key_down=False)
+    return True
+
+
 def _set_clipboard_text(text: str) -> bool:
     """将文本写入系统剪贴板
 
@@ -283,27 +357,51 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
         if not fg_ok:
             logger.warning("force_foreground failed for hwnd=%s, attempting inject anyway", hwnd)
 
-    # 2. Set clipboard
+    # 2. Verify foreground window before paste (especially when skip_foreground=True)
+    fg_before = user32.GetForegroundWindow()
+    if fg_before != hwnd:
+        logger.warning(
+            "Foreground mismatch before paste (fg=%s != target=%s), retrying force_foreground",
+            fg_before,
+            hwnd,
+        )
+        force_foreground(hwnd)
+        time.sleep(0.15)
+        fg_before = user32.GetForegroundWindow()
+        if fg_before != hwnd:
+            logger.error("Failed to set foreground before paste (fg=%s != target=%s)", fg_before, hwnd)
+            # Attempt paste anyway as last resort
+    else:
+        time.sleep(0.05)
+
+    # 3. Set clipboard
     if not _set_clipboard_text(text):
         logger.error("Failed to set clipboard")
         return False
 
-    time.sleep(0.05)
+    time.sleep(0.1)
 
-    # 3. Ctrl+V via SendInput
-    _send_key(VK_CONTROL, key_down=True)
-    _send_key(VK_V, key_down=True)
-    _send_key(VK_V, key_down=False)
-    _send_key(VK_CONTROL, key_down=False)
+    # 4. Log focus window right before paste
+    focus_hwnd = get_focus_window()
+    focus_cls, focus_title = get_window_info(focus_hwnd)
+    target_cls, target_title = get_window_info(hwnd)
+    logger.info(
+        "Before paste: fg=%s focus=%s(%s/%s) target=%s(%s/%s)",
+        fg_before, focus_hwnd, focus_cls, focus_title, hwnd, target_cls, target_title,
+    )
 
-    time.sleep(0.05)
+    # 5. Use KEYEVENTF_UNICODE to type text directly (bypass clipboard issues)
+    logger.info("Typing text via KEYEVENTF_UNICODE (%d chars)", len(text))
+    inject_text_unicode(text)
 
-    # 4. Send Enter to execute
+    time.sleep(0.1)
+
+    # 6. Send Enter to execute
     _send_key(0x0D, key_down=True)  # VK_RETURN
     _send_key(0x0D, key_down=False)
 
     time.sleep(inject_delay)
-    logger.info("Text injected to hwnd=%s: %s", hwnd, text[:50])
+    logger.info("Text injected to hwnd=%s (fg_before=%s focus=%s): %s", hwnd, fg_before, focus_hwnd, text[:50])
     return True
 
 

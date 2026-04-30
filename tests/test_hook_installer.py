@@ -50,6 +50,8 @@ def test_generate_hooks_config_all_events() -> None:
     assert "Notification" in hooks
     assert "Stop" in hooks
     assert "PreToolUse" in hooks
+    assert "SessionStart" in hooks
+    assert "UserPromptSubmit" in hooks
 
 
 def test_generate_hooks_config_single_event() -> None:
@@ -186,7 +188,7 @@ def test_claude_hooks_are_configured_returns_false_when_event_missing(
     target.parent.mkdir(parents=True)
     target.write_text(json.dumps(generate_hooks_config(["Notification", "Stop"])), encoding="utf-8")
 
-    assert claude_hooks_are_configured(str(target)) is False
+    assert claude_hooks_are_configured(str(target), events=CLAUDE_HOOK_EVENTS) is False
 
 
 def test_claude_hooks_are_configured_returns_false_when_command_mismatch(

@@ -20,8 +20,10 @@ def main(ctx: click.Context, config: str, log_level: str) -> None:
     监控 Claude Code 等 AI CLI 工具，通过飞书/微信发送通知并接收回复。
     """
     ctx.ensure_object(dict)
-    ctx.obj["config"] = load_config(config)
-    setup_logging(log_level)
+    loaded_config = load_config(config)
+    ctx.obj["config"] = loaded_config
+    log_file = loaded_config.get("general", {}).get("log_file", "")
+    setup_logging(log_level, log_file=log_file or None)
 
 
 def _get_pid_file(config: dict) -> Optional[Path]:
@@ -179,7 +181,7 @@ def doctor(ctx: click.Context) -> None:
 @click.option(
     "--event",
     required=True,
-    help="Hook event name (Notification, Stop, PreToolUse)",
+    help="Hook event name (Notification, Stop, PreToolUse, SessionStart, UserPromptSubmit)",
 )
 @click.pass_context
 def hook_handler(ctx: click.Context, event: str) -> None:

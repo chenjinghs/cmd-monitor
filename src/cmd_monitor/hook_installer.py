@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_HOOK_EVENTS = ["Notification", "Stop", "PreToolUse"]
+CLAUDE_HOOK_EVENTS = ["Notification", "Stop", "PreToolUse", "SessionStart", "UserPromptSubmit"]
 
 
 def generate_hook_command(

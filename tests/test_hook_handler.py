@@ -7,7 +7,9 @@ from cmd_monitor.hook_handler import (
     AskUserQuestionEvent,
     HookEvent,
     NotificationEvent,
+    SessionStartEvent,
     StopEvent,
+    UserPromptSubmitEvent,
     format_notification,
     handle_hook_event,
     parse_hook_input,
@@ -108,6 +110,45 @@ def test_parse_empty_string() -> None:
 def test_parse_non_object_json() -> None:
     result = parse_hook_input('"just a string"')
     assert result is None
+
+
+def test_parse_session_start_event() -> None:
+    data = {
+        "session_id": "sess_start",
+        "cwd": "/workspace",
+        "hook_event_name": "SessionStart",
+        "user_message": "Hello Claude",
+    }
+    event = parse_hook_input(json.dumps(data))
+    assert isinstance(event, SessionStartEvent)
+    assert event.session_id == "sess_start"
+    assert event.cwd == "/workspace"
+    assert event.user_message == "Hello Claude"
+
+
+def test_parse_session_start_without_message() -> None:
+    data = {
+        "session_id": "sess_start2",
+        "cwd": "/project",
+        "hook_event_name": "SessionStart",
+    }
+    event = parse_hook_input(json.dumps(data))
+    assert isinstance(event, SessionStartEvent)
+    assert event.user_message == ""
+
+
+def test_parse_user_prompt_submit_event() -> None:
+    data = {
+        "session_id": "sess_prompt",
+        "cwd": "/code",
+        "hook_event_name": "UserPromptSubmit",
+        "user_message": "请帮我写个排序算法",
+    }
+    event = parse_hook_input(json.dumps(data))
+    assert isinstance(event, UserPromptSubmitEvent)
+    assert event.session_id == "sess_prompt"
+    assert event.cwd == "/code"
+    assert event.user_message == "请帮我写个排序算法"
 
 
 def test_parse_unknown_event() -> None:
@@ -226,6 +267,62 @@ def test_format_ask_user_question_uses_400_char_snippet() -> None:
     assert "需要回答" in title
     assert "b" * 400 in content
     assert "b" * 401 not in content
+    assert "…" in content
+
+
+def test_format_session_start_event() -> None:
+    event = SessionStartEvent(
+        session_id="sess_start1234",
+        cwd="/workspace",
+        hook_event_name="SessionStart",
+        user_message="Hello Claude",
+    )
+    title, content = format_notification(event)
+    assert "会话开始" in title
+    assert "新会话启动" in content
+    assert "Hello Claude" in content
+    assert "/workspace" in content
+
+
+def test_format_session_start_without_message() -> None:
+    event = SessionStartEvent(
+        session_id="sess_start5678",
+        cwd="/project",
+        hook_event_name="SessionStart",
+    )
+    title, content = format_notification(event)
+    assert "会话开始" in title
+    assert "新会话启动" in content
+    assert "**消息**" not in content
+    assert "/project" in content
+
+
+def test_format_user_prompt_submit_event() -> None:
+    event = UserPromptSubmitEvent(
+        session_id="sess_prompt1234",
+        cwd="/code",
+        hook_event_name="UserPromptSubmit",
+        user_message="请帮我写个排序算法",
+    )
+    title, content = format_notification(event)
+    assert "正在执行" in title
+    assert "用户输入已提交" in content
+    assert "请帮我写个排序算法" in content
+    assert "/code" in content
+
+
+def test_format_user_prompt_submit_uses_400_char_snippet() -> None:
+    user_message = "x" * 500
+    event = UserPromptSubmitEvent(
+        session_id="sess_prompt1234",
+        cwd="/code",
+        hook_event_name="UserPromptSubmit",
+        user_message=user_message,
+    )
+    title, content = format_notification(event)
+    assert "正在执行" in title
+    assert "x" * 400 in content
+    assert "x" * 401 not in content
     assert "…" in content
 
 
@@ -349,3 +446,33 @@ def test_handle_empty_input_returns_zero() -> None:
     exit_code = handle_hook_event("", bot)
     assert exit_code == 0
     bot.send_card.assert_not_called()
+
+
+def test_handle_session_start_sends_card() -> None:
+    bot = MagicMock()
+    input_json = json.dumps({
+        "session_id": "sess_start",
+        "cwd": "/project",
+        "hook_event_name": "SessionStart",
+        "user_message": "Hello",
+    })
+    exit_code = handle_hook_event(input_json, bot)
+    assert exit_code == 0
+    bot.send_card.assert_called_once()
+    title, content = bot.send_card.call_args[0]
+    assert "会话开始" in title
+
+
+def test_handle_user_prompt_submit_sends_card() -> None:
+    bot = MagicMock()
+    input_json = json.dumps({
+        "session_id": "sess_prompt",
+        "cwd": "/project",
+        "hook_event_name": "UserPromptSubmit",
+        "user_message": "请帮忙",
+    })
+    exit_code = handle_hook_event(input_json, bot)
+    assert exit_code == 0
+    bot.send_card.assert_called_once()
+    title, content = bot.send_card.call_args[0]
+    assert "正在执行" in title

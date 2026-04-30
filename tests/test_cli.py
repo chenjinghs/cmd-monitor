@@ -56,6 +56,8 @@ def test_hook_handler_help() -> None:
     assert result.exit_code == 0
     assert "--event" in result.output
     assert "PreToolUse" in result.output
+    assert "SessionStart" in result.output
+    assert "UserPromptSubmit" in result.output
 
 
 def test_hooks_install_help() -> None:

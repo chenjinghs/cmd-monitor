@@ -58,12 +58,22 @@ class MOUSE_INPUT(ctypes.Structure):
 
 
 def _click_window_center(hwnd: int) -> None:
-    """在窗口中心模拟鼠标左键点击，使 WT 的 terminal pane 获得键盘焦点。"""
+    """在窗口中心模拟鼠标左键点击，使 WT 的 terminal pane 获得键盘焦点。
+
+    注意：WT 窗口顶部有标题栏(~30px) + 标签栏(~35px)，几何中心往往落在
+    标签栏上，点击后 terminal pane 拿不到键盘焦点。因此点击位置向下偏移，
+    落在 terminal pane 区域。
+    """
     rect = ctypes.wintypes.RECT()
     if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         return
-    cx = (rect.left + rect.right) // 2
-    cy = (rect.top + rect.bottom) // 2
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    # 标题栏(~30) + 标签栏(~35) + 可能的上边距，避开这些区域
+    # 直接点击窗口底部 1/4 处，确保落在 terminal pane 上
+    WT_CHROME_ESTIMATE = 80
+    cx = rect.left + width // 2
+    cy = rect.bottom - max(height // 4, 50)  # 底部偏上一点，避免点到状态栏
     # 把坐标转换为 SendInput 需要的 0-65535 绝对坐标
     sm_cx = _user32.GetSystemMetrics(0)  # screen width
     sm_cy = _user32.GetSystemMetrics(1)  # screen height
@@ -91,7 +101,8 @@ def _click_window_center(hwnd: int) -> None:
     up[0].union.mi.dy = abs_y
     up[0].union.mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE
     _user32.SendInput(1, up, ctypes.sizeof(MOUSE_INPUT))
-    time.sleep(0.1)
+    # 点击后给 terminal pane 足够时间获得焦点
+    time.sleep(0.3)
 
 logger = logging.getLogger(__name__)
 
@@ -188,9 +199,24 @@ def inject_to_session(
         # WT 切 tab 后用鼠标点击确保 terminal pane 获得键盘焦点
         time.sleep(0.3)
         _click_window_center(info.wt_window_hwnd)
+        # 验证当前前台窗口确实是目标窗口；若不是，重试一次
         fg = _user32.GetForegroundWindow()
-        logger.info("Injecting to wt_window_hwnd=%s (tab_switched=%s, fg_now=%s, fg_is_wt=%s)",
-                    info.wt_window_hwnd, tab_switched, fg, fg == info.wt_window_hwnd)
+        if fg != info.wt_window_hwnd:
+            logger.warning(
+                "Foreground mismatch after click (fg=%s != target=%s), retrying force_foreground",
+                fg,
+                info.wt_window_hwnd,
+            )
+            force_foreground(info.wt_window_hwnd)
+            time.sleep(0.2)
+            fg = _user32.GetForegroundWindow()
+        logger.info(
+            "Injecting to wt_window_hwnd=%s (tab_switched=%s, fg_now=%s, fg_is_wt=%s)",
+            info.wt_window_hwnd,
+            tab_switched,
+            fg,
+            fg == info.wt_window_hwnd,
+        )
         return inject_text(info.wt_window_hwnd, text, inject_delay=inject_delay, skip_foreground=True)
 
     # 独立 conhost 窗口
