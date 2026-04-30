@@ -260,10 +260,12 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
             if isinstance(option, dict) and option.get("label")
         ]
         options_line = f"\n**选项**: {' / '.join(option_labels)}" if option_labels else ""
+        reply_hint = "\n\n**回复**: 直接在此消息下方回复您的选择即可"
         content = (
             f"**问题**: {event.question}{options_line}{msg_snippet}\n"
             f"**目录**: {event.cwd}\n"
             f"**会话**: {event.session_id[:8]}"
+            f"{reply_hint}"
         )
     elif isinstance(event, SessionStartEvent):
         title = "Claude Code — 会话开始"
