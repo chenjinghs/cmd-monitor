@@ -17,6 +17,7 @@ import os
 import signal
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -190,6 +191,17 @@ class Daemon:
             window_hwnd=int(event.get("window_hwnd", 0) or 0),
             last_event_name=event.get("event_name", ""),
         )
+        # 如果新 session 没有窗口信息（如上下文压缩创建的新 session），
+        # 尝试从同一 cwd 的最近活跃 session 继承窗口上下文
+        if info.wt_window_hwnd == 0 and info.window_hwnd == 0:
+            inherited = self._inherit_window_context(info)
+            if inherited:
+                info = inherited
+                logger.info(
+                    "Inherited window context for new session %s from cwd=%s",
+                    session_id[:8],
+                    info.cwd,
+                )
         self._registry.upsert(info)
         self._token_router.mark_active(session_id)
         token = self._token_router.get_or_create_token(session_id)
@@ -238,6 +250,30 @@ class Daemon:
             self._state.transition(session_id, SessionState.RUNNING)
 
         return {"ok": True, "notified": True, "token": token}
+
+    def _inherit_window_context(self, info: SessionInfo) -> Optional[SessionInfo]:
+        """从同一 cwd 的最近活跃 session 继承窗口上下文。"""
+        if not info.cwd:
+            return None
+        candidates = [
+            s for s in self._registry.all_sessions()
+            if s.session_id != info.session_id
+            and s.cwd == info.cwd
+            and (s.wt_window_hwnd != 0 or s.window_hwnd != 0)
+        ]
+        if not candidates:
+            return None
+        # 按最近活跃时间排序，取最新的
+        candidates.sort(key=lambda s: s.last_active_at, reverse=True)
+        best = candidates[0]
+        return replace(
+            info,
+            wt_session=info.wt_session or best.wt_session,
+            wt_window_id=info.wt_window_id or best.wt_window_id,
+            wt_tab_index=info.wt_tab_index if info.wt_tab_index >= 0 else best.wt_tab_index,
+            wt_window_hwnd=best.wt_window_hwnd,
+            window_hwnd=best.window_hwnd,
+        )
 
     # --- feishu reply routing ---
 
