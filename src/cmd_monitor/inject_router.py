@@ -39,6 +39,7 @@ MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_ABSOLUTE = 0x8000
+MOUSEEVENTF_VIRTUALDESK = 0x4000
 
 class MOUSEINPUT(ctypes.Structure):
     _fields_ = [
@@ -58,51 +59,73 @@ class MOUSE_INPUT(ctypes.Structure):
 
 
 def _click_window_center(hwnd: int) -> None:
-    """在窗口中心模拟鼠标左键点击，使 WT 的 terminal pane 获得键盘焦点。
+    """在窗口客户区中心模拟鼠标左键点击，使 WT 的 terminal pane 获得键盘焦点。
 
-    注意：WT 窗口顶部有标题栏(~30px) + 标签栏(~35px)，几何中心往往落在
-    标签栏上，点击后 terminal pane 拿不到键盘焦点。因此点击位置向下偏移，
-    落在 terminal pane 区域。
+    使用客户区（client area）坐标，排除标题栏和边框，确保点击落在
+    terminal pane 上而非标签栏或标题栏。
     """
-    rect = ctypes.wintypes.RECT()
-    if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+    # 1. 获取客户区大小
+    client = ctypes.wintypes.RECT()
+    if not _user32.GetClientRect(hwnd, ctypes.byref(client)):
         return
-    width = rect.right - rect.left
-    height = rect.bottom - rect.top
-    # 标题栏(~30) + 标签栏(~35) + 可能的上边距，避开这些区域
-    # 直接点击窗口底部 1/4 处，确保落在 terminal pane 上
-    WT_CHROME_ESTIMATE = 80
-    cx = rect.left + width // 2
-    cy = rect.bottom - max(height // 4, 50)  # 底部偏上一点，避免点到状态栏
-    # 把坐标转换为 SendInput 需要的 0-65535 绝对坐标
-    sm_cx = _user32.GetSystemMetrics(0)  # screen width
-    sm_cy = _user32.GetSystemMetrics(1)  # screen height
-    abs_x = (cx * 65535) // (sm_cx - 1) if sm_cx > 1 else cx
-    abs_y = (cy * 65535) // (sm_cy - 1) if sm_cy > 1 else cy
+    cw = client.right - client.left
+    ch = client.bottom - client.top
+    if cw <= 0 or ch <= 0:
+        return
 
+    # 2. 客户区中心转屏幕坐标
+    pt = ctypes.wintypes.POINT(client.left + cw // 2, client.top + ch // 2)
+    if not _user32.ClientToScreen(hwnd, ctypes.byref(pt)):
+        return
+    cx, cy = pt.x, pt.y
+
+    # 3. 转 SendInput 绝对坐标（支持多显示器虚拟桌面）
+    sm_cx = _user32.GetSystemMetrics(0)   # SM_CXSCREEN
+    sm_cy = _user32.GetSystemMetrics(1)   # SM_CYSCREEN
+    # 虚拟桌面范围（多显示器）
+    vsm_cx = _user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+    vsm_cy = _user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
+    vsm_x = _user32.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+    vsm_y = _user32.GetSystemMetrics(77)   # SM_YVIRTUALSCREEN
+    use_virtual = vsm_cx > 0 and vsm_cy > 0
+    screen_w = vsm_cx if use_virtual else sm_cx
+    screen_h = vsm_cy if use_virtual else sm_cy
+    origin_x = vsm_x if use_virtual else 0
+    origin_y = vsm_y if use_virtual else 0
+    if screen_w > 1 and screen_h > 1:
+        abs_x = ((cx - origin_x) * 65535) // (screen_w - 1)
+        abs_y = ((cy - origin_y) * 65535) // (screen_h - 1)
+    else:
+        abs_x = cx
+        abs_y = cy
+
+    # 4. 发送鼠标移动 + 左键按下
     inputs = (MOUSE_INPUT * 2)()
-    # move to center
-    inputs[0].type = 0  # INPUT_MOUSE
+    inputs[0].type = 0
     inputs[0].union.mi.dx = abs_x
     inputs[0].union.mi.dy = abs_y
-    inputs[0].union.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
-    # left click
+    ABS_FLAGS = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+    inputs[0].union.mi.dwFlags = ABS_FLAGS
     inputs[1].type = 0
     inputs[1].union.mi.dx = abs_x
     inputs[1].union.mi.dy = abs_y
-    inputs[1].union.mi.dwFlags = MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE
-
+    inputs[1].union.mi.dwFlags = MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
     _user32.SendInput(2, inputs, ctypes.sizeof(MOUSE_INPUT))
     time.sleep(0.05)
 
+    # 5. 左键释放
     up = (MOUSE_INPUT * 1)()
     up[0].type = 0
     up[0].union.mi.dx = abs_x
     up[0].union.mi.dy = abs_y
-    up[0].union.mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE
+    up[0].union.mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
     _user32.SendInput(1, up, ctypes.sizeof(MOUSE_INPUT))
-    # 点击后给 terminal pane 足够时间获得焦点
-    time.sleep(0.3)
+
+    # 6. 点击后额外尝试 SetActiveWindow + SetFocus（best-effort）
+    time.sleep(0.15)
+    _user32.SetActiveWindow(hwnd)
+    _user32.SetFocus(hwnd)
+    time.sleep(0.15)
 
 logger = logging.getLogger(__name__)
 
