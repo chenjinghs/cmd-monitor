@@ -347,12 +347,12 @@ def force_foreground(hwnd: int) -> bool:
         if user32.GetForegroundWindow() == hwnd:
             return True
 
-    # UIPI fallback: 当 daemon 无 GUI 窗口时 GetForegroundWindow() 可能返回 0,
-    # 但目标窗口仍可见 — 假定其已在前台。
+    # UIPI fallback: 当 daemon 无 GUI 窗口时 GetForegroundWindow() 可能返回 NULL
+    # (ctypes HWND restype 下表现为 Python None),但目标窗口仍可见 — 假定其已在前台。
     fg_final = user32.GetForegroundWindow()
-    if fg_final == 0 and user32.IsWindowVisible(hwnd):
+    if not fg_final and user32.IsWindowVisible(hwnd):
         logger.info(
-            "force_foreground: GetForegroundWindow() returned 0, but target window is visible. "
+            "force_foreground: GetForegroundWindow() returned NULL, but target window is visible. "
             "Assuming window is already foreground (UIPI restriction)."
         )
         return True
@@ -432,10 +432,14 @@ def _set_clipboard_text(text: str) -> bool:
 
 
 def _is_paste_ready(hwnd: int, fg_hwnd: int) -> bool:
-    """前台窗口是否适合 paste — 命中 hwnd,或 UIPI 限制下 fg=0 但目标窗口可见。"""
+    """前台窗口是否适合 paste — 命中 hwnd,或 UIPI 限制下 fg=NULL 但目标窗口可见。
+
+    注: ctypes HWND restype 在 NULL 时返回 Python None,所以用 `not fg_hwnd` 同时覆盖
+    None 与 0 两种取值。
+    """
     if fg_hwnd == hwnd:
         return True
-    return fg_hwnd == 0 and bool(user32.IsWindowVisible(hwnd))
+    return not fg_hwnd and bool(user32.IsWindowVisible(hwnd))
 
 
 def _ensure_paste_ready(hwnd: int, user_wait_seconds: float = 2.0) -> int:
