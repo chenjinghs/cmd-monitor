@@ -220,8 +220,8 @@ def test_format_ask_user_question_event() -> None:
     assert "/code" in content
 
 
-def test_format_notification_uses_400_char_context() -> None:
-    final_message = "c" * 500
+def test_format_notification_uses_700_char_context() -> None:
+    final_message = "c" * 800
     event = NotificationEvent(
         session_id="sess_12345678",
         cwd="/home/user",
@@ -231,14 +231,14 @@ def test_format_notification_uses_400_char_context() -> None:
     )
     title, content = format_notification(event)
     assert "需要输入" in title
-    assert "c" * 400 in content
-    assert "c" * 401 not in content
+    assert "c" * 700 in content
+    assert "c" * 701 not in content
     assert "…" in content
     assert "**上下文**" in content
 
 
-def test_format_stop_event_uses_600_char_snippet() -> None:
-    final_message = "a" * 700
+def test_format_stop_event_uses_900_char_snippet() -> None:
+    final_message = "a" * 1000
     event = StopEvent(
         session_id="sess_abcdefgh",
         cwd="/workspace",
@@ -248,13 +248,13 @@ def test_format_stop_event_uses_600_char_snippet() -> None:
     )
     title, content = format_notification(event)
     assert "已停止" in title
-    assert "a" * 600 in content
-    assert "a" * 601 not in content
+    assert "a" * 900 in content
+    assert "a" * 901 not in content
     assert "…" in content
 
 
-def test_format_ask_user_question_uses_400_char_snippet() -> None:
-    final_message = "b" * 500
+def test_format_ask_user_question_uses_700_char_snippet() -> None:
+    final_message = "b" * 800
     event = AskUserQuestionEvent(
         session_id="sess_ask1234",
         cwd="/code",
@@ -265,8 +265,8 @@ def test_format_ask_user_question_uses_400_char_snippet() -> None:
     )
     title, content = format_notification(event)
     assert "需要回答" in title
-    assert "b" * 400 in content
-    assert "b" * 401 not in content
+    assert "b" * 700 in content
+    assert "b" * 701 not in content
     assert "…" in content
 
 
@@ -311,8 +311,8 @@ def test_format_user_prompt_submit_event() -> None:
     assert "/code" in content
 
 
-def test_format_user_prompt_submit_uses_400_char_snippet() -> None:
-    user_message = "x" * 500
+def test_format_user_prompt_submit_uses_1600_char_snippet() -> None:
+    user_message = "x" * 1700
     event = UserPromptSubmitEvent(
         session_id="sess_prompt1234",
         cwd="/code",
@@ -321,8 +321,8 @@ def test_format_user_prompt_submit_uses_400_char_snippet() -> None:
     )
     title, content = format_notification(event)
     assert "正在执行" in title
-    assert "x" * 400 in content
-    assert "x" * 401 not in content
+    assert "x" * 1600 in content
+    assert "x" * 1601 not in content
     assert "…" in content
 
 

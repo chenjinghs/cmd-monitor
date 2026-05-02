@@ -66,7 +66,7 @@ class UserPromptSubmitEvent(HookEvent):
 def _format_message_snippet(
     text: str,
     label: str,
-    limit: int = 200,
+    limit: int = 800,
     exclude: str = "",
 ) -> str:
     """格式化卡片里的附加消息片段。"""
@@ -223,8 +223,8 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
         title = "Claude Code — 需要输入"
         msg_snippet = ""
         if event.final_message:
-            snippet = event.final_message[:400]
-            if len(event.final_message) > 400:
+            snippet = event.final_message[:700]
+            if len(event.final_message) > 700:
                 snippet += "…"
             msg_snippet = f"\n**上下文**: {snippet}"
         content = (
@@ -234,11 +234,11 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
         )
     elif isinstance(event, StopEvent):
         title = "Claude Code — 已停止"
-        # 截取最后一条消息前 600 字符，避免卡片过长
+        # 截取最后一条消息前 900 字符，避免卡片过长
         msg_snippet = ""
         if event.final_message:
-            snippet = event.final_message[:600]
-            if len(event.final_message) > 600:
+            snippet = event.final_message[:900]
+            if len(event.final_message) > 900:
                 snippet += "…"
             msg_snippet = f"\n**结尾消息**: {snippet}"
         content = (
@@ -250,8 +250,8 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
         title = "Claude Code — 需要回答"
         msg_snippet = ""
         if event.final_message:
-            snippet = event.final_message[:400]
-            if len(event.final_message) > 400:
+            snippet = event.final_message[:700]
+            if len(event.final_message) > 700:
                 snippet += "…"
             msg_snippet = f"\n**结尾消息**: {snippet}"
         option_labels = [
@@ -271,8 +271,8 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
         title = "Claude Code — 会话开始"
         msg_snippet = ""
         if event.user_message:
-            snippet = event.user_message[:400]
-            if len(event.user_message) > 400:
+            snippet = event.user_message[:1600]
+            if len(event.user_message) > 1600:
                 snippet += "…"
             msg_snippet = f"\n**消息**: {snippet}"
         content = (
@@ -284,8 +284,8 @@ def format_notification(event: HookEvent) -> tuple[str, str]:
         title = "Claude Code — 正在执行"
         msg_snippet = ""
         if event.user_message:
-            snippet = event.user_message[:400]
-            if len(event.user_message) > 400:
+            snippet = event.user_message[:1600]
+            if len(event.user_message) > 1600:
                 snippet += "…"
             msg_snippet = f"\n**输入**: {snippet}"
         content = (
