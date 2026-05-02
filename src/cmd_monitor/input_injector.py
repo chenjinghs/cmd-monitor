@@ -545,15 +545,24 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
         fg_before, focus_hwnd, focus_cls, focus_title, hwnd, target_cls, target_title,
     )
 
-    # KEYEVENTF_UNICODE 直接打字,规避剪贴板在远程桌面/某些终端的兼容问题
-    logger.info("Typing text via KEYEVENTF_UNICODE (%d chars)", len(text))
-    inject_text_unicode(text)
+    if focus_hwnd == 0:
+        # UIPI 限制下没有焦点窗口，SendInput 会被丢弃。
+        # 改用 PostMessage 直接发送 WM_CHAR 到目标窗口。
+        logger.info("No focus window, using PostMessage WM_CHAR fallback")
+        for ch in text:
+            user32.PostMessageW(hwnd, 0x0102, ord(ch), 0)
+        user32.PostMessageW(hwnd, 0x0100, 0x0D, 0)  # WM_KEYDOWN VK_RETURN
+        user32.PostMessageW(hwnd, 0x0101, 0x0D, 0)  # WM_KEYUP   VK_RETURN
+    else:
+        # KEYEVENTF_UNICODE 直接打字,规避剪贴板在远程桌面/某些终端的兼容问题
+        logger.info("Typing text via KEYEVENTF_UNICODE (%d chars)", len(text))
+        inject_text_unicode(text)
 
-    time.sleep(0.1)
+        time.sleep(0.1)
 
-    # Enter 执行
-    _send_key(0x0D, key_down=True)  # VK_RETURN
-    _send_key(0x0D, key_down=False)
+        # Enter 执行
+        _send_key(0x0D, key_down=True)  # VK_RETURN
+        _send_key(0x0D, key_down=False)
 
     time.sleep(inject_delay)
     logger.info(

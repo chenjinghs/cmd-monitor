@@ -10,34 +10,21 @@ from cmd_monitor.session_registry import SessionInfo
 
 
 @patch("cmd_monitor.inject_router._find_wt_exe")
-@patch("cmd_monitor.inject_router.subprocess.run")
-def test_focus_wt_tab_omits_window_arg_when_window_id_zero(
-    mock_run: MagicMock, mock_find_wt: MagicMock
-) -> None:
-    """window_id=0 时省略 --window 参数"""
+def test_focus_wt_tab_window_id_zero_returns_false(mock_find_wt: MagicMock) -> None:
+    """window_id=0 时直接返回 False，不调用 wt.exe"""
     mock_find_wt.return_value = "wt.exe"
-    mock_run.return_value = MagicMock(returncode=0, stderr=b"")
 
-    _focus_wt_tab(window_id=0, tab_index=2)
+    result = _focus_wt_tab(window_id=0, tab_index=2)
 
-    args = mock_run.call_args[0][0]
-    assert args == ["wt.exe", "focus-tab", "--target", "2"]
-    assert "--window" not in args
+    assert result is False
+    mock_find_wt.assert_not_called()
 
 
-@patch("cmd_monitor.inject_router._find_wt_exe")
-@patch("cmd_monitor.inject_router.subprocess.run")
-def test_focus_wt_tab_omits_window_arg_when_window_id_negative(
-    mock_run: MagicMock, mock_find_wt: MagicMock
-) -> None:
-    """window_id=-1 时省略 --window 参数"""
-    mock_find_wt.return_value = "wt.exe"
-    mock_run.return_value = MagicMock(returncode=0, stderr=b"")
+def test_focus_wt_tab_window_id_negative_returns_false() -> None:
+    """window_id=-1 时直接返回 False，不调用 wt.exe"""
+    result = _focus_wt_tab(window_id=-1, tab_index=1)
 
-    _focus_wt_tab(window_id=-1, tab_index=1)
-
-    args = mock_run.call_args[0][0]
-    assert "--window" not in args
+    assert result is False
 
 
 @patch("cmd_monitor.inject_router._find_wt_exe")
@@ -93,6 +80,7 @@ def test_focus_wt_tab_subprocess_error_returns_false(
 # --- inject_to_session tests ---
 
 
+@patch("cmd_monitor.inject_router._user32")
 @patch("cmd_monitor.inject_router._focus_wt_tab")
 @patch("cmd_monitor.inject_router.force_foreground")
 @patch("cmd_monitor.inject_router._click_window_center")
@@ -102,10 +90,12 @@ def test_inject_to_session_wt_path_uses_skip_foreground(
     mock_click: MagicMock,
     mock_fg: MagicMock,
     mock_focus: MagicMock,
+    mock_user32: MagicMock,
 ) -> None:
     """WT 路径调用 inject_text 时 skip_foreground=True"""
     mock_focus.return_value = True
     mock_inject.return_value = True
+    mock_user32.IsWindow.return_value = True
 
     info = SessionInfo(
         session_id="sess_12345678",

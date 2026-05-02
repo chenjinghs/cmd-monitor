@@ -121,11 +121,8 @@ def _click_window_center(hwnd: int) -> None:
     up[0].union.mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
     _user32.SendInput(1, up, ctypes.sizeof(MOUSE_INPUT))
 
-    # 6. 点击后额外尝试 SetActiveWindow + SetFocus（best-effort）
-    time.sleep(0.15)
-    _user32.SetActiveWindow(hwnd)
-    _user32.SetFocus(hwnd)
-    time.sleep(0.15)
+    # 点击后给 terminal pane 足够时间获得焦点
+    time.sleep(0.3)
 
 logger = logging.getLogger(__name__)
 
@@ -150,9 +147,9 @@ def _find_wt_exe() -> Optional[str]:
 def _focus_wt_tab(window_id: int, tab_index: int) -> bool:
     """调用 wt.exe focus-tab --target <idx>。
 
-    当 window_id > 0 时附加 --window <id>，否则省略（操作当前窗口）。
+    仅当 window_id > 0 时执行，避免 window_id=0 时切到错误窗口或创建新窗口。
     """
-    if tab_index < 0:
+    if tab_index < 0 or window_id <= 0:
         return False
     wt_exe = _find_wt_exe()
     if not wt_exe:
@@ -209,6 +206,13 @@ def inject_to_session(
 
     # 优先 WT 多 tab 路径
     if info.wt_session and info.wt_window_hwnd:
+        if not _user32.IsWindow(info.wt_window_hwnd):
+            logger.error(
+                "WT window no longer exists for session %s (hwnd=%s)",
+                info.session_id[:8],
+                info.wt_window_hwnd,
+            )
+            return False
         tab_switched = False
         if info.wt_tab_index >= 0:
             tab_switched = _focus_wt_tab(info.wt_window_id, info.wt_tab_index)
@@ -228,6 +232,17 @@ def inject_to_session(
             tab_switched,
         )
         return inject_text(info.wt_window_hwnd, text, inject_delay=inject_delay, skip_foreground=True)
+
+    # 独立 conhost 窗口
+    if info.window_hwnd:
+        if not _user32.IsWindow(info.window_hwnd):
+            logger.error(
+                "Window no longer exists for session %s (hwnd=%s)",
+                info.session_id[:8],
+                info.window_hwnd,
+            )
+            return False
+        return inject_text(info.window_hwnd, text, inject_delay=inject_delay)
 
     # 独立 conhost 窗口
     if info.window_hwnd:
