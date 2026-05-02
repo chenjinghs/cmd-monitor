@@ -231,17 +231,19 @@ def force_foreground(hwnd: int) -> bool:
     if user32.GetForegroundWindow() == hwnd:
         return True
 
-    # AllowSetForegroundWindow(ASFW_ANY) — 让本进程获得前台切换权限
-    ASFW_ANY = 0xFFFFFFFF
-    user32.AllowSetForegroundWindow(ASFW_ANY)
-
     # 多轮重试,每轮使用不同策略
     HWND_TOP = 0
+    HWND_TOPMOST = -1
+    HWND_NOTOPMOST = -2
     SWP_SHOWWINDOW = 0x0040
     SWP_NOMOVE = 0x0002
     SWP_NOSIZE = 0x0001
+    ASFW_ANY = 0xFFFFFFFF
 
     for attempt in range(3):
+        # 每轮开始时都请求前台权限（权限窗口期很短）
+        user32.AllowSetForegroundWindow(ASFW_ANY)
+
         # 策略 1: AttachThreadInput + SetForegroundWindow
         fg_hwnd = user32.GetForegroundWindow()
         pid_buf = ctypes.wintypes.DWORD()
@@ -266,25 +268,36 @@ def force_foreground(hwnd: int) -> bool:
             if attached_target:
                 user32.AttachThreadInput(current_thread, target_thread, False)
 
-        time.sleep(0.08 + attempt * 0.05)
+        time.sleep(0.1 + attempt * 0.05)
         if user32.GetForegroundWindow() == hwnd:
             return True
 
         # 策略 2: SwitchToThisWindow (Windows 内置的切换逻辑)
         user32.SwitchToThisWindow(hwnd, True)
-        time.sleep(0.1 + attempt * 0.05)
+        time.sleep(0.12 + attempt * 0.05)
         if user32.GetForegroundWindow() == hwnd:
             return True
 
-        # 策略 3: SetWindowPos 置顶后恢复
+        # 策略 3: SetWindowPos HWND_TOPMOST 置顶（不需要前台权限）
         user32.SetWindowPos(
-            hwnd, HWND_TOP, 0, 0, 0, 0,
+            hwnd, HWND_TOPMOST, 0, 0, 0, 0,
             SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE,
         )
+        time.sleep(0.05)
         user32.SetForegroundWindow(hwnd)
         time.sleep(0.1 + attempt * 0.05)
         if user32.GetForegroundWindow() == hwnd:
+            # 成功后再取消置顶，保持正常层级
+            user32.SetWindowPos(
+                hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE,
+            )
             return True
+        # 取消置顶，避免窗口一直置顶
+        user32.SetWindowPos(
+            hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+            SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE,
+        )
 
         # 策略 4: Alt-key trick
         user32.keybd_event(0x12, 0, 0, 0)  # Alt down
