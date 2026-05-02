@@ -194,7 +194,7 @@ def inject_to_session(
                 "wt_tab_index=-1 for session %s — cannot switch tab, will inject to current foreground tab",
                 info.session_id[:8],
             )
-        force_foreground(info.wt_window_hwnd)
+        force_foreground(info.wt_window_hwnd, flash_on_failure=False)
         # WT 切 tab 后用鼠标点击确保 terminal pane 获得键盘焦点
         time.sleep(0.3)
         _click_window_center(info.wt_window_hwnd)

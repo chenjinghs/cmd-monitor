@@ -301,13 +301,18 @@ def _flash_window_taskbar(hwnd: int) -> None:
         pass
 
 
-def force_foreground(hwnd: int) -> bool:
+def force_foreground(hwnd: int, flash_on_failure: bool = True) -> bool:
     """强制将窗口带到前台。
 
     多轮调度 4 种策略,任一成功即返回 True。
 
     核心技巧: AttachThreadInput 必须附加到【当前前台窗口】的线程,
     而不是目标窗口的线程,这样才能获得"前台权限"来切换焦点。
+
+    Args:
+        hwnd: 目标窗口句柄
+        flash_on_failure: 为 False 时，所有策略失败后不闪烁任务栏。
+            适用于调用方已有完整注入保障流程（focus-tab + click + inject）的场景。
     """
     if not hwnd or not user32.IsWindow(hwnd):
         logger.error("hwnd is invalid or no longer exists: %s", hwnd)
@@ -357,12 +362,15 @@ def force_foreground(hwnd: int) -> bool:
         )
         return True
 
-    logger.warning(
-        "force_foreground: all attempts failed (hwnd=%s fg=%s)",
+    # UIPI 环境下 GetForegroundWindow 不可靠，降级为 INFO 避免用户误以为注入失败。
+    logger.info(
+        "force_foreground: all attempts failed (hwnd=%s fg=%s), "
+        "inject will proceed with caller-provided fallback",
         hwnd,
         fg_final,
     )
-    _flash_window_taskbar(hwnd)
+    if flash_on_failure:
+        _flash_window_taskbar(hwnd)
     return False
 
 
