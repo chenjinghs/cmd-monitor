@@ -61,9 +61,10 @@ class Daemon:
         self._auto_reply: Optional[AutoReplyScheduler] = None
         if auto_cfg.get("enabled", False):
             self._auto_reply = AutoReplyScheduler(
-                timeout_seconds=float(auto_cfg.get("timeout_seconds", 60.0)),
-                default_answer=str(auto_cfg.get("default_answer", "y")),
+                timeout_seconds=float(auto_cfg.get("timeout_seconds", 120.0)),
+                default_answer=str(auto_cfg.get("default_answer", "继续")),
                 on_timeout=self._handle_auto_reply_timeout,
+                max_replies=int(auto_cfg.get("max_replies", 3)),
             )
 
         self._bot: Optional[FeishuBot] = None
@@ -290,6 +291,7 @@ class Daemon:
 
         if self._auto_reply is not None:
             self._auto_reply.cancel(result.session_id)
+            self._auto_reply.mark_replied(result.session_id)
         self._state.transition(result.session_id, SessionState.RUNNING)
         self._registry.touch(result.session_id)
         self._token_router.mark_active(result.session_id)

@@ -33,19 +33,21 @@ def test_auto_reply_fires_after_timeout() -> None:
         fired.append((sid, default))
         ev.set()
 
-    sched = AutoReplyScheduler(timeout_seconds=0.05, default_answer="y", on_timeout=on_timeout)
+    sched = AutoReplyScheduler(timeout_seconds=0.05, default_answer="继续", on_timeout=on_timeout)
+    sched.mark_replied("s1")
     sched.arm("s1")
     assert ev.wait(timeout=1.0)
-    assert fired == [("s1", "y")]
+    assert fired == [("s1", "继续")]
 
 
 def test_auto_reply_cancel_prevents_fire() -> None:
     fired = []
     sched = AutoReplyScheduler(
         timeout_seconds=0.5,
-        default_answer="y",
+        default_answer="继续",
         on_timeout=lambda s, d: fired.append(s),
     )
+    sched.mark_replied("s1")
     sched.arm("s1")
     assert sched.cancel("s1") is True
     time.sleep(0.6)
@@ -53,7 +55,7 @@ def test_auto_reply_cancel_prevents_fire() -> None:
 
 
 def test_auto_reply_cancel_unknown_returns_false() -> None:
-    sched = AutoReplyScheduler(timeout_seconds=1.0, default_answer="y", on_timeout=lambda s, d: None)
+    sched = AutoReplyScheduler(timeout_seconds=1.0, default_answer="继续", on_timeout=lambda s, d: None)
     assert sched.cancel("nonexistent") is False
 
 
@@ -65,9 +67,54 @@ def test_auto_reply_arm_resets_timer() -> None:
         fired.append(sid)
         ev.set()
 
-    sched = AutoReplyScheduler(timeout_seconds=0.1, default_answer="y", on_timeout=on_timeout)
+    sched = AutoReplyScheduler(timeout_seconds=0.1, default_answer="继续", on_timeout=on_timeout)
+    sched.mark_replied("s1")
     sched.arm("s1")
     time.sleep(0.05)
     sched.arm("s1")  # reset
     assert ev.wait(timeout=0.5)
     assert fired == ["s1"]
+
+
+def test_auto_reply_only_for_replied_sessions() -> None:
+    """未 mark_replied 的 session 不会触发自动回复。"""
+    fired = []
+    sched = AutoReplyScheduler(
+        timeout_seconds=0.05,
+        default_answer="继续",
+        on_timeout=lambda s, d: fired.append(s),
+    )
+    # 不调用 mark_replied，直接 arm
+    result = sched.arm("s1")
+    assert result is False
+    time.sleep(0.1)
+    assert fired == []
+
+
+def test_auto_reply_max_replies() -> None:
+    """同一 session 最多触发 max_replies 次自动回复。"""
+    fired = []
+    sched = AutoReplyScheduler(
+        timeout_seconds=0.02,
+        default_answer="继续",
+        on_timeout=lambda s, d: fired.append(s),
+        max_replies=2,
+    )
+    sched.mark_replied("s1")
+
+    # 第一次触发
+    sched.arm("s1")
+    time.sleep(0.05)
+    assert fired == ["s1"]
+
+    # 第二次触发
+    sched.arm("s1")
+    time.sleep(0.05)
+    assert fired == ["s1", "s1"]
+
+    # 第三次 arm 应该被拒绝（已达 max_replies）
+    result = sched.arm("s1")
+    assert result is False
+    time.sleep(0.05)
+    # 第三次不会触发
+    assert fired == ["s1", "s1"]
