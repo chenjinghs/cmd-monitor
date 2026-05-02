@@ -72,5 +72,5 @@ enabled = false
 timeout_seconds = 120.0
 # 超时后自动注入的预设答案
 default_answer = "继续"
-# 同一 session 的最大自动回复次数
+# 同一 session 连续未回复的最大自动回复次数（用户手动回复后计数重置）
 max_replies = 3

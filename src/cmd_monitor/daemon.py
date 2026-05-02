@@ -145,6 +145,8 @@ class Daemon:
             for sid in self._registry.evict_expired():
                 self._token_router.remove(sid)
                 self._state.remove(sid)
+                if self._auto_reply is not None:
+                    self._auto_reply.remove(sid)
                 logger.info("Session evicted (TTL): %s", sid[:8])
 
     # --- pipe event handling ---

@@ -129,7 +129,11 @@ def test_feishu_reply_unknown_token_no_fallback() -> None:
 
 def test_auto_reply_cancelled_on_user_reply() -> None:
     d = make_daemon(auto_reply=True)
+    # 模拟该 session 此前已手动回复过(满足 arm 的前置条件)
+    d._auto_reply.mark_replied("A")
     d._handle_pipe_event({"type": "hook_event", "session_id": "A", "title": "t", "content": "c"})
+    # 确认已 arm 起来,后续 cancel 才有意义
+    assert "A" in d._auto_reply._timers
     token = d._token_router.get_or_create_token("A")
     fired = []
     d._auto_reply._on_timeout = lambda sid, default: fired.append(sid)

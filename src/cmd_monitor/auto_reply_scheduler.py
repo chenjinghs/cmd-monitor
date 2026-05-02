@@ -6,7 +6,7 @@
 
 新增功能:
 - 只针对用户手动回复过的 session 启用自动回复
-- 同一 session 最多自动回复 max_replies 次
+- 同一 session 连续未回复最多 max_replies 次自动回复;用户手动回复后计数重置
 """
 
 from __future__ import annotations
@@ -52,13 +52,15 @@ class AutoReplyScheduler:
         return self._max_replies
 
     def mark_replied(self, session_id: str) -> None:
-        """标记 session 为用户已手动回复过。
+        """标记 session 为用户已手动回复过,并重置连续未回复计数。
 
         只有被标记过的 session 才会触发自动回复。
+        max_replies 计数语义为"连续未回复次数",用户手动回复即清零。
         """
         with self._lock:
             self._replied_sessions.add(session_id)
-            logger.info("AutoReply: session %s marked as manually replied", session_id[:8])
+            self._reply_counts.pop(session_id, None)
+            logger.info("AutoReply: session %s marked as manually replied (count reset)", session_id[:8])
 
     def arm(self, session_id: str) -> bool:
         """为 session 启动/重置超时定时器。
@@ -106,11 +108,23 @@ class AutoReplyScheduler:
         logger.debug("AutoReply cancelled for %s", session_id[:8])
         return True
 
+    def remove(self, session_id: str) -> None:
+        """清理 session 的自动回复状态(session 被 evict 时调用)。"""
+        with self._lock:
+            timer = self._timers.pop(session_id, None)
+            self._replied_sessions.discard(session_id)
+            self._reply_counts.pop(session_id, None)
+        if timer is not None:
+            timer.cancel()
+        logger.debug("AutoReply state removed for %s", session_id[:8])
+
     def shutdown(self) -> None:
         """停止全部定时器(daemon 退出时调用)。"""
         with self._lock:
             timers = list(self._timers.values())
             self._timers.clear()
+            self._replied_sessions.clear()
+            self._reply_counts.clear()
         for t in timers:
             t.cancel()
 

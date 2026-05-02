@@ -118,3 +118,57 @@ def test_auto_reply_max_replies() -> None:
     time.sleep(0.05)
     # 第三次不会触发
     assert fired == ["s1", "s1"]
+
+
+def test_auto_reply_remove_clears_state() -> None:
+    """remove 应该清理 session 的所有自动回复状态。"""
+    fired = []
+    sched = AutoReplyScheduler(
+        timeout_seconds=0.5,
+        default_answer="继续",
+        on_timeout=lambda s, d: fired.append(s),
+    )
+    sched.mark_replied("s1")
+    sched.arm("s1")
+    sched.remove("s1")
+
+    # remove 后定时器应该被取消
+    time.sleep(0.6)
+    assert fired == []
+
+    # remove 后需要重新 mark_replied 才能 arm
+    assert sched.arm("s1") is False
+
+    # 重新标记后可以 arm
+    sched.mark_replied("s1")
+    assert sched.arm("s1") is True
+
+
+def test_auto_reply_count_resets_on_mark_replied() -> None:
+    """用户手动回复后,连续未回复计数应重置,允许下一轮自动回复。"""
+    fired = []
+    sched = AutoReplyScheduler(
+        timeout_seconds=0.02,
+        default_answer="继续",
+        on_timeout=lambda s, d: fired.append(s),
+        max_replies=2,
+    )
+    sched.mark_replied("s1")
+
+    # 连续触发到上限
+    sched.arm("s1")
+    time.sleep(0.05)
+    sched.arm("s1")
+    time.sleep(0.05)
+    assert fired == ["s1", "s1"]
+
+    # 上限后 arm 应被拒绝
+    assert sched.arm("s1") is False
+
+    # 用户手动回复 → 计数重置
+    sched.mark_replied("s1")
+
+    # 重置后可重新 arm 并触发
+    assert sched.arm("s1") is True
+    time.sleep(0.05)
+    assert fired == ["s1", "s1", "s1"]
