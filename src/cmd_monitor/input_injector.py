@@ -62,6 +62,22 @@ user32.SetClipboardData.restype = ctypes.c_void_p
 user32.CloseClipboard.argtypes = []
 user32.CloseClipboard.restype = ctypes.wintypes.BOOL
 
+# FlashWindowEx for taskbar notification when foreground switch fails
+class FLASHWINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_uint),
+        ("hwnd", ctypes.wintypes.HWND),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("uCount", ctypes.wintypes.UINT),
+        ("dwTimeout", ctypes.wintypes.DWORD),
+    ]
+
+user32.FlashWindowEx.argtypes = [ctypes.POINTER(FLASHWINFO)]
+user32.FlashWindowEx.restype = ctypes.wintypes.BOOL
+
+FLASHW_ALL = 0x00000003
+FLASHW_TIMERNOFG = 0x0000000C
+
 kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
 kernel32.GlobalAlloc.restype = ctypes.c_void_p
 kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
@@ -307,11 +323,33 @@ def force_foreground(hwnd: int) -> bool:
         if user32.GetForegroundWindow() == hwnd:
             return True
 
+    # 如果 GetForegroundWindow() 返回 0（常见于 daemon 无 GUI 窗口时权限受限），
+    # 但目标窗口仍然可见，假设窗口已在台前（UIPI 可能阻止了前台句柄读取）
+    fg_final = user32.GetForegroundWindow()
+    if fg_final == 0 and user32.IsWindowVisible(hwnd):
+        logger.info(
+            "force_foreground: GetForegroundWindow() returned 0, but target window is visible. "
+            "Assuming window is already foreground (UIPI restriction)."
+        )
+        return True
+
     logger.warning(
         "force_foreground: all attempts failed (hwnd=%s fg=%s)",
         hwnd,
-        user32.GetForegroundWindow(),
+        fg_final,
     )
+    # 闪烁任务栏提醒用户手动切换窗口（不需要前台权限）
+    try:
+        fi = FLASHWINFO()
+        fi.cbSize = ctypes.sizeof(FLASHWINFO)
+        fi.hwnd = hwnd
+        fi.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG
+        fi.uCount = 5
+        fi.dwTimeout = 0
+        user32.FlashWindowEx(ctypes.byref(fi))
+        logger.info("Flashed window taskbar to notify user")
+    except Exception:
+        pass
     return False
 
 
@@ -404,7 +442,17 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
 
     # 2. Verify foreground window before paste (especially when skip_foreground=True)
     fg_before = user32.GetForegroundWindow()
-    if fg_before != hwnd:
+    if fg_before == hwnd:
+        time.sleep(0.05)
+    elif fg_before == 0 and user32.IsWindowVisible(hwnd):
+        # GetForegroundWindow() 返回 0 常见于 daemon 无 GUI 窗口时权限受限（UIPI），
+        # 但目标窗口实际可能已在前台。跳过验证直接注入。
+        logger.info(
+            "Foreground check skipped: GetForegroundWindow() returned 0, "
+            "but target window is visible. Proceeding with inject."
+        )
+        time.sleep(0.05)
+    elif fg_before != hwnd:
         logger.warning(
             "Foreground mismatch before paste (fg=%s != target=%s), retrying force_foreground",
             fg_before,
@@ -413,11 +461,26 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
         force_foreground(hwnd)
         time.sleep(0.15)
         fg_before = user32.GetForegroundWindow()
-        if fg_before != hwnd:
+        if fg_before == hwnd:
+            time.sleep(0.05)
+        elif fg_before == 0 and user32.IsWindowVisible(hwnd):
+            logger.info(
+                "Foreground check skipped after retry: GetForegroundWindow() returned 0, "
+                "but target window is visible. Proceeding with inject."
+            )
+            time.sleep(0.05)
+        else:
             logger.error("Failed to set foreground before paste (fg=%s != target=%s)", fg_before, hwnd)
-            # Attempt paste anyway as last resort
-    else:
-        time.sleep(0.05)
+            # 窗口闪烁已触发，给用户 2 秒时间手动切换到终端窗口
+            logger.info("Waiting 2s for user to manually switch window...")
+            for _ in range(4):
+                time.sleep(0.5)
+                fg_before = user32.GetForegroundWindow()
+                if fg_before == hwnd or (fg_before == 0 and user32.IsWindowVisible(hwnd)):
+                    logger.info("User switched to target window, proceeding with inject")
+                    break
+            else:
+                logger.warning("User did not switch window, attempting inject anyway")
 
     # 3. Set clipboard
     if not _set_clipboard_text(text):
