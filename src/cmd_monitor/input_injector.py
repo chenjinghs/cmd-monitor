@@ -321,7 +321,7 @@ def force_foreground(hwnd: int) -> bool:
     if user32.GetForegroundWindow() == hwnd:
         return True
 
-    for attempt in range(3):
+    for attempt in range(2):
         # 每轮请求一次前台权限（窗口期很短）
         user32.AllowSetForegroundWindow(ASFW_ANY)
 
@@ -343,7 +343,7 @@ def force_foreground(hwnd: int) -> bool:
             return True
 
         _alt_key_trick(hwnd)
-        time.sleep(0.15 + attempt * 0.05)
+        time.sleep(0.12 + attempt * 0.05)
         if user32.GetForegroundWindow() == hwnd:
             return True
 
@@ -442,14 +442,36 @@ def _is_paste_ready(hwnd: int, fg_hwnd: int) -> bool:
     return not fg_hwnd and bool(user32.IsWindowVisible(hwnd))
 
 
-def _ensure_paste_ready(hwnd: int, user_wait_seconds: float = 2.0) -> int:
+def _ensure_paste_ready(hwnd: int, user_wait_seconds: float = 2.0, skip_foreground: bool = False) -> int:
     """验证前台已就绪,必要时重试 force_foreground 并等用户手动切窗。
+
+    Args:
+        hwnd: 目标窗口句柄
+        user_wait_seconds: 等待用户手动切换窗口的时间
+        skip_foreground: 为 True 时跳过 force_foreground 重试。
+            前置条件: 调用方已确保目标窗口可见且获得焦点。
+            UIPI 环境下 GetForegroundWindow 可能返回 NULL，此时只要窗口
+            可见就直接继续，避免无意义的 force_foreground 重试。
 
     Returns:
         最后一次 GetForegroundWindow() 返回值,供日志记录
     """
     fg = user32.GetForegroundWindow()
     if _is_paste_ready(hwnd, fg):
+        time.sleep(0.05)
+        return fg
+
+    if skip_foreground:
+        # 调用方已处理 foreground，UIPI 环境下 GetForegroundWindow 可能返回 NULL，
+        # 只要目标窗口可见就直接继续，避免无意义的 force_foreground 重试。
+        is_visible = bool(user32.IsWindowVisible(hwnd))
+        log_fn = logger.warning if not is_visible else logger.info
+        log_fn(
+            "skip_foreground=True, bypassing foreground check for hwnd=%s (fg=%s, visible=%s)",
+            hwnd,
+            fg,
+            is_visible,
+        )
         time.sleep(0.05)
         return fg
 
@@ -498,7 +520,7 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
         if not force_foreground(hwnd):
             logger.warning("force_foreground failed for hwnd=%s, attempting inject anyway", hwnd)
 
-    fg_before = _ensure_paste_ready(hwnd)
+    fg_before = _ensure_paste_ready(hwnd, skip_foreground=skip_foreground)
 
     if not _set_clipboard_text(text):
         logger.error("Failed to set clipboard")

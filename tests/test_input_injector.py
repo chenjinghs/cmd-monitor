@@ -12,6 +12,7 @@ from cmd_monitor.input_injector import (
     KEYBDINPUT,
     KEYEVENTF_KEYUP,
     WindowInfo,
+    _ensure_paste_ready,
     _is_paste_ready,
     find_first_window,
     find_windows,
@@ -226,6 +227,58 @@ def test_inject_text_success(
     # Should call inject_text_unicode then Enter
     mock_unicode.assert_called_once_with("hello world")
     assert mock_send_key.call_count == 2  # Enter down, Enter up
+
+
+# --- _ensure_paste_ready Tests ---
+
+
+@patch("cmd_monitor.input_injector.user32")
+@patch("cmd_monitor.input_injector.force_foreground")
+@patch("cmd_monitor.input_injector.time")
+def test_ensure_paste_ready_skip_foreground_bypasses_retry(
+    mock_time: MagicMock, mock_fg: MagicMock, mock_user32: MagicMock
+) -> None:
+    """skip_foreground=True 时，即使 fg 不匹配也不重试 force_foreground"""
+    mock_user32.GetForegroundWindow.return_value = 99999
+    mock_user32.IsWindowVisible.return_value = True
+
+    result = _ensure_paste_ready(12345, skip_foreground=True)
+
+    mock_fg.assert_not_called()
+    assert result == 99999
+
+
+@patch("cmd_monitor.input_injector.user32")
+@patch("cmd_monitor.input_injector.force_foreground")
+@patch("cmd_monitor.input_injector.time")
+def test_ensure_paste_ready_skip_foreground_uipi_null_fg(
+    mock_time: MagicMock, mock_fg: MagicMock, mock_user32: MagicMock
+) -> None:
+    """skip_foreground=True 且 UIPI 导致 fg=None 时，不重试直接返回"""
+    mock_user32.GetForegroundWindow.return_value = None
+    mock_user32.IsWindowVisible.return_value = True
+
+    result = _ensure_paste_ready(12345, skip_foreground=True)
+
+    mock_fg.assert_not_called()
+    assert result is None
+
+
+@patch("cmd_monitor.input_injector.user32")
+@patch("cmd_monitor.input_injector.force_foreground")
+@patch("cmd_monitor.input_injector.time")
+def test_ensure_paste_ready_without_skip_calls_force_foreground(
+    mock_time: MagicMock, mock_fg: MagicMock, mock_user32: MagicMock
+) -> None:
+    """skip_foreground=False（默认）时，fg 不匹配会调用 force_foreground"""
+    mock_user32.GetForegroundWindow.side_effect = [99999, 12345]
+    mock_user32.IsWindowVisible.return_value = True
+    mock_fg.return_value = True
+
+    result = _ensure_paste_ready(12345)
+
+    mock_fg.assert_called_once_with(12345)
+    assert result == 12345
 
 
 # --- inject_to_window Tests ---

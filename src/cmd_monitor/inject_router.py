@@ -125,7 +125,10 @@ def _find_wt_exe() -> Optional[str]:
 
 
 def _focus_wt_tab(window_id: int, tab_index: int) -> bool:
-    """调用 wt.exe --window <id> focus-tab --target <idx>。"""
+    """调用 wt.exe focus-tab --target <idx>。
+
+    当 window_id > 0 时附加 --window <id>，否则省略（操作当前窗口）。
+    """
     if tab_index < 0:
         return False
     wt_exe = _find_wt_exe()
@@ -133,15 +136,11 @@ def _focus_wt_tab(window_id: int, tab_index: int) -> bool:
         logger.debug("wt.exe not found, skip tab focus")
         return False
     try:
+        args = [wt_exe, "focus-tab", "--target", str(tab_index)]
+        if window_id > 0:
+            args = [wt_exe, "--window", str(window_id), "focus-tab", "--target", str(tab_index)]
         result = subprocess.run(
-            [
-                wt_exe,
-                "--window",
-                str(window_id),
-                "focus-tab",
-                "--target",
-                str(tab_index),
-            ],
+            args,
             check=False,
             timeout=3.0,
             capture_output=True,
@@ -199,23 +198,11 @@ def inject_to_session(
         # WT 切 tab 后用鼠标点击确保 terminal pane 获得键盘焦点
         time.sleep(0.3)
         _click_window_center(info.wt_window_hwnd)
-        # 验证当前前台窗口确实是目标窗口；若不是，重试一次
-        fg = _user32.GetForegroundWindow()
-        if fg != info.wt_window_hwnd:
-            logger.warning(
-                "Foreground mismatch after click (fg=%s != target=%s), retrying force_foreground",
-                fg,
-                info.wt_window_hwnd,
-            )
-            force_foreground(info.wt_window_hwnd)
-            time.sleep(0.2)
-            fg = _user32.GetForegroundWindow()
+        time.sleep(0.2)
         logger.info(
-            "Injecting to wt_window_hwnd=%s (tab_switched=%s, fg_now=%s, fg_is_wt=%s)",
+            "Injecting to wt_window_hwnd=%s (tab_switched=%s)",
             info.wt_window_hwnd,
             tab_switched,
-            fg,
-            fg == info.wt_window_hwnd,
         )
         return inject_text(info.wt_window_hwnd, text, inject_delay=inject_delay, skip_foreground=True)
 
