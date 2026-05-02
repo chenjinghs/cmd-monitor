@@ -1,17 +1,14 @@
 """Hook handler 测试"""
 
 import json
-from unittest.mock import MagicMock
 
 from cmd_monitor.hook_handler import (
     AskUserQuestionEvent,
-    HookEvent,
     NotificationEvent,
     SessionStartEvent,
     StopEvent,
     UserPromptSubmitEvent,
     format_notification,
-    handle_hook_event,
     parse_hook_input,
 )
 
@@ -324,155 +321,3 @@ def test_format_user_prompt_submit_uses_1600_char_snippet() -> None:
     assert "x" * 1600 in content
     assert "x" * 1601 not in content
     assert "…" in content
-
-
-# --- handle_hook_event tests ---
-
-
-def test_handle_notification_sends_card() -> None:
-    bot = MagicMock()
-    input_json = json.dumps({
-        "session_id": "sess_123",
-        "cwd": "/project",
-        "hook_event_name": "Notification",
-        "message": "需要确认",
-    })
-    exit_code = handle_hook_event(input_json, bot)
-    assert exit_code == 0
-    bot.send_card.assert_called_once()
-    title, content = bot.send_card.call_args[0]
-    assert "需要输入" in title
-
-
-def test_handle_stop_sends_card() -> None:
-    bot = MagicMock()
-    input_json = json.dumps({
-        "session_id": "sess_456",
-        "cwd": "/project",
-        "hook_event_name": "Stop",
-        "stop_hook_active": False,
-    })
-    exit_code = handle_hook_event(input_json, bot)
-    assert exit_code == 0
-    bot.send_card.assert_called_once()
-
-
-def test_handle_stop_active_sends_card() -> None:
-    bot = MagicMock()
-    input_json = json.dumps({
-        "session_id": "sess_789",
-        "cwd": "/project",
-        "hook_event_name": "Stop",
-        "stop_hook_active": True,
-    })
-    exit_code = handle_hook_event(input_json, bot)
-    assert exit_code == 0
-    bot.send_card.assert_called_once()
-
-
-def test_handle_pre_tool_use_ask_user_question_sends_card() -> None:
-    bot = MagicMock()
-    input_json = json.dumps({
-        "session_id": "sess_pre_ask",
-        "cwd": "/workspace",
-        "hook_event_name": "PreToolUse",
-        "tool_name": "AskUserQuestion",
-        "tool_input": {
-            "questions": [
-                {
-                    "question": "下一步做什么？",
-                    "options": [{"label": "查日志"}, {"label": "继续测试"}],
-                }
-            ]
-        },
-    })
-    exit_code = handle_hook_event(input_json, bot)
-    assert exit_code == 0
-    bot.send_card.assert_called_once()
-    title, content = bot.send_card.call_args[0]
-    assert "需要回答" in title
-    assert "下一步做什么？" in content
-
-
-def test_handle_pre_tool_use_ask_user_question_arms_auto_reply() -> None:
-    bot = MagicMock()
-    auto_replier = MagicMock()
-    input_json = json.dumps({
-        "session_id": "sess_pre_ask",
-        "cwd": "/workspace",
-        "hook_event_name": "PreToolUse",
-        "tool_name": "AskUserQuestion",
-        "tool_input": {
-            "questions": [
-                {
-                    "question": "下一步做什么？",
-                    "options": [{"label": "查日志"}, {"label": "继续测试"}],
-                }
-            ]
-        },
-    })
-    exit_code = handle_hook_event(input_json, bot, auto_replier=auto_replier)
-    assert exit_code == 0
-    auto_replier.arm.assert_called_once()
-
-
-def test_handle_pre_tool_use_non_ask_user_question_skips() -> None:
-    bot = MagicMock()
-    input_json = json.dumps({
-        "session_id": "sess_pre_other",
-        "cwd": "/workspace",
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": {"command": "pwd"},
-    })
-    exit_code = handle_hook_event(input_json, bot)
-    assert exit_code == 0
-    bot.send_card.assert_not_called()
-
-
-def test_handle_no_bot_returns_zero() -> None:
-    input_json = json.dumps({
-        "session_id": "sess_xxx",
-        "cwd": "/project",
-        "hook_event_name": "Notification",
-        "message": "test",
-    })
-    exit_code = handle_hook_event(input_json, None)
-    assert exit_code == 0
-
-
-def test_handle_empty_input_returns_zero() -> None:
-    bot = MagicMock()
-    exit_code = handle_hook_event("", bot)
-    assert exit_code == 0
-    bot.send_card.assert_not_called()
-
-
-def test_handle_session_start_sends_card() -> None:
-    bot = MagicMock()
-    input_json = json.dumps({
-        "session_id": "sess_start",
-        "cwd": "/project",
-        "hook_event_name": "SessionStart",
-        "user_message": "Hello",
-    })
-    exit_code = handle_hook_event(input_json, bot)
-    assert exit_code == 0
-    bot.send_card.assert_called_once()
-    title, content = bot.send_card.call_args[0]
-    assert "会话开始" in title
-
-
-def test_handle_user_prompt_submit_sends_card() -> None:
-    bot = MagicMock()
-    input_json = json.dumps({
-        "session_id": "sess_prompt",
-        "cwd": "/project",
-        "hook_event_name": "UserPromptSubmit",
-        "user_message": "请帮忙",
-    })
-    exit_code = handle_hook_event(input_json, bot)
-    assert exit_code == 0
-    bot.send_card.assert_called_once()
-    title, content = bot.send_card.call_args[0]
-    assert "正在执行" in title

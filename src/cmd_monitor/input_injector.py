@@ -227,12 +227,87 @@ def find_first_window(title_substr: str) -> Optional[WindowInfo]:
 # --- Window Focus ---
 
 
+# Win32 constants for force_foreground strategies
+HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
+SWP_SHOWWINDOW = 0x0040
+SWP_NOMOVE = 0x0002
+SWP_NOSIZE = 0x0001
+SWP_FLAGS = SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE
+ASFW_ANY = 0xFFFFFFFF
+VK_MENU = 0x12  # Alt
+KEYEVENTF_KEYUP_FLAG = 0x0002
+
+
+def _attach_thread_input_set_foreground(hwnd: int) -> None:
+    """策略 1: AttachThreadInput 到当前前台窗口的线程，借其权限切换焦点。"""
+    fg_hwnd = user32.GetForegroundWindow()
+    pid_buf = ctypes.wintypes.DWORD()
+    fg_thread = (
+        user32.GetWindowThreadProcessId(fg_hwnd, ctypes.byref(pid_buf)) if fg_hwnd else 0
+    )
+    target_thread = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_buf))
+    current_thread = kernel32.GetCurrentThreadId()
+
+    attached_fg = False
+    attached_target = False
+    if fg_thread and fg_thread != current_thread:
+        attached_fg = bool(user32.AttachThreadInput(current_thread, fg_thread, True))
+    if target_thread and target_thread != current_thread and target_thread != fg_thread:
+        attached_target = bool(user32.AttachThreadInput(current_thread, target_thread, True))
+
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        user32.SetActiveWindow(hwnd)
+    finally:
+        if attached_fg:
+            user32.AttachThreadInput(current_thread, fg_thread, False)
+        if attached_target:
+            user32.AttachThreadInput(current_thread, target_thread, False)
+
+
+def _topmost_toggle(hwnd: int) -> None:
+    """策略 3a: HWND_TOPMOST 置顶（不需前台权限），再 SetForegroundWindow。"""
+    user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS)
+    time.sleep(0.05)
+    user32.SetForegroundWindow(hwnd)
+
+
+def _undo_topmost(hwnd: int) -> None:
+    """策略 3b: 取消置顶，保持正常 Z-order。"""
+    user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FLAGS)
+
+
+def _alt_key_trick(hwnd: int) -> None:
+    """策略 4: 按下/释放 Alt 后再切前台，规避 Win10 焦点窃取限制。"""
+    user32.keybd_event(VK_MENU, 0, 0, 0)
+    user32.SetForegroundWindow(hwnd)
+    user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP_FLAG, 0)
+
+
+def _flash_window_taskbar(hwnd: int) -> None:
+    """所有策略失败后闪烁任务栏图标，提醒用户手动切窗。"""
+    try:
+        fi = FLASHWINFO()
+        fi.cbSize = ctypes.sizeof(FLASHWINFO)
+        fi.hwnd = hwnd
+        fi.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG
+        fi.uCount = 5
+        fi.dwTimeout = 0
+        user32.FlashWindowEx(ctypes.byref(fi))
+        logger.info("Flashed window taskbar to notify user")
+    except Exception:
+        pass
+
+
 def force_foreground(hwnd: int) -> bool:
     """强制将窗口带到前台。
 
+    多轮调度 4 种策略,任一成功即返回 True。
+
     核心技巧: AttachThreadInput 必须附加到【当前前台窗口】的线程,
     而不是目标窗口的线程,这样才能获得"前台权限"来切换焦点。
-    增加多轮重试和多种策略,提高在复杂桌面环境下的成功率。
     """
     if not hwnd or not user32.IsWindow(hwnd):
         logger.error("hwnd is invalid or no longer exists: %s", hwnd)
@@ -243,88 +318,37 @@ def force_foreground(hwnd: int) -> bool:
         user32.ShowWindow(hwnd, SW_RESTORE)
         time.sleep(0.1)
 
-    # Already foreground?
     if user32.GetForegroundWindow() == hwnd:
         return True
 
-    # 多轮重试,每轮使用不同策略
-    HWND_TOP = 0
-    HWND_TOPMOST = -1
-    HWND_NOTOPMOST = -2
-    SWP_SHOWWINDOW = 0x0040
-    SWP_NOMOVE = 0x0002
-    SWP_NOSIZE = 0x0001
-    ASFW_ANY = 0xFFFFFFFF
-
     for attempt in range(3):
-        # 每轮开始时都请求前台权限（权限窗口期很短）
+        # 每轮请求一次前台权限（窗口期很短）
         user32.AllowSetForegroundWindow(ASFW_ANY)
 
-        # 策略 1: AttachThreadInput + SetForegroundWindow
-        fg_hwnd = user32.GetForegroundWindow()
-        pid_buf = ctypes.wintypes.DWORD()
-        fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, ctypes.byref(pid_buf)) if fg_hwnd else 0
-        target_thread = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_buf))
-        current_thread = kernel32.GetCurrentThreadId()
-
-        attached_fg = False
-        attached_target = False
-        if fg_thread and fg_thread != current_thread:
-            attached_fg = bool(user32.AttachThreadInput(current_thread, fg_thread, True))
-        if target_thread and target_thread != current_thread and target_thread != fg_thread:
-            attached_target = bool(user32.AttachThreadInput(current_thread, target_thread, True))
-
-        try:
-            user32.BringWindowToTop(hwnd)
-            user32.SetForegroundWindow(hwnd)
-            user32.SetActiveWindow(hwnd)
-        finally:
-            if attached_fg:
-                user32.AttachThreadInput(current_thread, fg_thread, False)
-            if attached_target:
-                user32.AttachThreadInput(current_thread, target_thread, False)
-
+        _attach_thread_input_set_foreground(hwnd)
         time.sleep(0.1 + attempt * 0.05)
         if user32.GetForegroundWindow() == hwnd:
             return True
 
-        # 策略 2: SwitchToThisWindow (Windows 内置的切换逻辑)
         user32.SwitchToThisWindow(hwnd, True)
         time.sleep(0.12 + attempt * 0.05)
         if user32.GetForegroundWindow() == hwnd:
             return True
 
-        # 策略 3: SetWindowPos HWND_TOPMOST 置顶（不需要前台权限）
-        user32.SetWindowPos(
-            hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-            SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE,
-        )
-        time.sleep(0.05)
-        user32.SetForegroundWindow(hwnd)
+        _topmost_toggle(hwnd)
         time.sleep(0.1 + attempt * 0.05)
-        if user32.GetForegroundWindow() == hwnd:
-            # 成功后再取消置顶，保持正常层级
-            user32.SetWindowPos(
-                hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE,
-            )
+        succeeded = user32.GetForegroundWindow() == hwnd
+        _undo_topmost(hwnd)
+        if succeeded:
             return True
-        # 取消置顶，避免窗口一直置顶
-        user32.SetWindowPos(
-            hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-            SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE,
-        )
 
-        # 策略 4: Alt-key trick
-        user32.keybd_event(0x12, 0, 0, 0)  # Alt down
-        user32.SetForegroundWindow(hwnd)
-        user32.keybd_event(0x12, 0, 0x0002, 0)  # Alt up
+        _alt_key_trick(hwnd)
         time.sleep(0.15 + attempt * 0.05)
         if user32.GetForegroundWindow() == hwnd:
             return True
 
-    # 如果 GetForegroundWindow() 返回 0（常见于 daemon 无 GUI 窗口时权限受限），
-    # 但目标窗口仍然可见，假设窗口已在台前（UIPI 可能阻止了前台句柄读取）
+    # UIPI fallback: 当 daemon 无 GUI 窗口时 GetForegroundWindow() 可能返回 0,
+    # 但目标窗口仍可见 — 假定其已在前台。
     fg_final = user32.GetForegroundWindow()
     if fg_final == 0 and user32.IsWindowVisible(hwnd):
         logger.info(
@@ -338,18 +362,7 @@ def force_foreground(hwnd: int) -> bool:
         hwnd,
         fg_final,
     )
-    # 闪烁任务栏提醒用户手动切换窗口（不需要前台权限）
-    try:
-        fi = FLASHWINFO()
-        fi.cbSize = ctypes.sizeof(FLASHWINFO)
-        fi.hwnd = hwnd
-        fi.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG
-        fi.uCount = 5
-        fi.dwTimeout = 0
-        user32.FlashWindowEx(ctypes.byref(fi))
-        logger.info("Flashed window taskbar to notify user")
-    except Exception:
-        pass
+    _flash_window_taskbar(hwnd)
     return False
 
 
@@ -418,6 +431,49 @@ def _set_clipboard_text(text: str) -> bool:
         user32.CloseClipboard()
 
 
+def _is_paste_ready(hwnd: int, fg_hwnd: int) -> bool:
+    """前台窗口是否适合 paste — 命中 hwnd,或 UIPI 限制下 fg=0 但目标窗口可见。"""
+    if fg_hwnd == hwnd:
+        return True
+    return fg_hwnd == 0 and bool(user32.IsWindowVisible(hwnd))
+
+
+def _ensure_paste_ready(hwnd: int, user_wait_seconds: float = 2.0) -> int:
+    """验证前台已就绪,必要时重试 force_foreground 并等用户手动切窗。
+
+    Returns:
+        最后一次 GetForegroundWindow() 返回值,供日志记录
+    """
+    fg = user32.GetForegroundWindow()
+    if _is_paste_ready(hwnd, fg):
+        time.sleep(0.05)
+        return fg
+
+    logger.warning(
+        "Foreground mismatch before paste (fg=%s != target=%s), retrying force_foreground",
+        fg,
+        hwnd,
+    )
+    force_foreground(hwnd)
+    time.sleep(0.15)
+    fg = user32.GetForegroundWindow()
+    if _is_paste_ready(hwnd, fg):
+        time.sleep(0.05)
+        return fg
+
+    logger.error("Failed to set foreground before paste (fg=%s != target=%s)", fg, hwnd)
+    logger.info("Waiting %.1fs for user to manually switch window...", user_wait_seconds)
+    polls = max(1, int(user_wait_seconds / 0.5))
+    for _ in range(polls):
+        time.sleep(0.5)
+        fg = user32.GetForegroundWindow()
+        if _is_paste_ready(hwnd, fg):
+            logger.info("User switched to target window, proceeding with inject")
+            return fg
+    logger.warning("User did not switch window, attempting inject anyway")
+    return fg
+
+
 def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground: bool = False) -> bool:
     """将文本注入目标窗口（剪贴板粘贴方式）
 
@@ -434,62 +490,19 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
         logger.warning("Empty text, skipping injection")
         return False
 
-    # 1. Bring window to foreground (best-effort; daemon may lack foreground permission)
     if not skip_foreground:
-        fg_ok = force_foreground(hwnd)
-        if not fg_ok:
+        if not force_foreground(hwnd):
             logger.warning("force_foreground failed for hwnd=%s, attempting inject anyway", hwnd)
 
-    # 2. Verify foreground window before paste (especially when skip_foreground=True)
-    fg_before = user32.GetForegroundWindow()
-    if fg_before == hwnd:
-        time.sleep(0.05)
-    elif fg_before == 0 and user32.IsWindowVisible(hwnd):
-        # GetForegroundWindow() 返回 0 常见于 daemon 无 GUI 窗口时权限受限（UIPI），
-        # 但目标窗口实际可能已在前台。跳过验证直接注入。
-        logger.info(
-            "Foreground check skipped: GetForegroundWindow() returned 0, "
-            "but target window is visible. Proceeding with inject."
-        )
-        time.sleep(0.05)
-    elif fg_before != hwnd:
-        logger.warning(
-            "Foreground mismatch before paste (fg=%s != target=%s), retrying force_foreground",
-            fg_before,
-            hwnd,
-        )
-        force_foreground(hwnd)
-        time.sleep(0.15)
-        fg_before = user32.GetForegroundWindow()
-        if fg_before == hwnd:
-            time.sleep(0.05)
-        elif fg_before == 0 and user32.IsWindowVisible(hwnd):
-            logger.info(
-                "Foreground check skipped after retry: GetForegroundWindow() returned 0, "
-                "but target window is visible. Proceeding with inject."
-            )
-            time.sleep(0.05)
-        else:
-            logger.error("Failed to set foreground before paste (fg=%s != target=%s)", fg_before, hwnd)
-            # 窗口闪烁已触发，给用户 2 秒时间手动切换到终端窗口
-            logger.info("Waiting 2s for user to manually switch window...")
-            for _ in range(4):
-                time.sleep(0.5)
-                fg_before = user32.GetForegroundWindow()
-                if fg_before == hwnd or (fg_before == 0 and user32.IsWindowVisible(hwnd)):
-                    logger.info("User switched to target window, proceeding with inject")
-                    break
-            else:
-                logger.warning("User did not switch window, attempting inject anyway")
+    fg_before = _ensure_paste_ready(hwnd)
 
-    # 3. Set clipboard
     if not _set_clipboard_text(text):
         logger.error("Failed to set clipboard")
         return False
 
     time.sleep(0.1)
 
-    # 4. Log focus window right before paste
+    # paste 前记录前台/焦点状态,排查窗口被抢焦点等问题
     focus_hwnd = get_focus_window()
     focus_cls, focus_title = get_window_info(focus_hwnd)
     target_cls, target_title = get_window_info(hwnd)
@@ -498,18 +511,21 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
         fg_before, focus_hwnd, focus_cls, focus_title, hwnd, target_cls, target_title,
     )
 
-    # 5. Use KEYEVENTF_UNICODE to type text directly (bypass clipboard issues)
+    # KEYEVENTF_UNICODE 直接打字,规避剪贴板在远程桌面/某些终端的兼容问题
     logger.info("Typing text via KEYEVENTF_UNICODE (%d chars)", len(text))
     inject_text_unicode(text)
 
     time.sleep(0.1)
 
-    # 6. Send Enter to execute
+    # Enter 执行
     _send_key(0x0D, key_down=True)  # VK_RETURN
     _send_key(0x0D, key_down=False)
 
     time.sleep(inject_delay)
-    logger.info("Text injected to hwnd=%s (fg_before=%s focus=%s): %s", hwnd, fg_before, focus_hwnd, text[:50])
+    logger.info(
+        "Text injected to hwnd=%s (fg_before=%s focus=%s): %s",
+        hwnd, fg_before, focus_hwnd, text[:50],
+    )
     return True
 
 

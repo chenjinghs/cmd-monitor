@@ -23,7 +23,7 @@ from typing import Any, Dict, Optional
 
 from cmd_monitor.auto_reply_scheduler import AutoReplyScheduler
 from cmd_monitor.feishu_client import FeishuBot, FeishuMessage
-from cmd_monitor.injector import inject_to_session
+from cmd_monitor.inject_router import inject_to_session
 from cmd_monitor.ipc import PipeServer
 from cmd_monitor.session_registry import SessionInfo, SessionRegistry
 from cmd_monitor.state_manager import PerSessionStateManager, SessionState
