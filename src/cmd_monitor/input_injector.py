@@ -150,7 +150,9 @@ def get_focus_window() -> int:
     pid = ctypes.wintypes.DWORD()
     tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
     if user32.GetGUIThreadInfo(tid, ctypes.byref(gti)):
-        return int(gti.hwndFocus)
+        if gti.hwndFocus:
+            return int(gti.hwndFocus)
+        return 0
     return 0
 
 
