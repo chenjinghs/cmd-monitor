@@ -551,18 +551,14 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
 
     fg_before = _ensure_paste_ready(hwnd, skip_foreground=skip_foreground)
 
-    if not _set_clipboard_text(text):
-        logger.error("Failed to set clipboard")
-        return False
-
-    time.sleep(0.1)
-
+    # 剪贴板方案已弃用：daemon 无 GUI 窗口时 OpenClipboard 会失败。
+    # 改用 KEYEVENTF_UNICODE 逐字符输入，零依赖且支持 Unicode。
     # paste 前记录前台/焦点状态,排查窗口被抢焦点等问题
     focus_hwnd = get_focus_window()
     focus_cls, focus_title = get_window_info(focus_hwnd)
     target_cls, target_title = get_window_info(hwnd)
     logger.info(
-        "Before paste: fg=%s focus=%s(%s/%s) target=%s(%s/%s)",
+        "Before inject: fg=%s focus=%s(%s/%s) target=%s(%s/%s)",
         fg_before, focus_hwnd, focus_cls, focus_title, hwnd, target_cls, target_title,
     )
 
