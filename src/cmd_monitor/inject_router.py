@@ -147,20 +147,16 @@ def _find_wt_exe() -> Optional[str]:
 def _focus_wt_tab(window_id: int, tab_index: int) -> bool:
     """调用 wt.exe focus-tab --target <idx>。
 
-    window_id > 0 时附加 --window；window_id <= 0 时不附加，作用于当前 WT 窗口。
-    window_id < 0 直接返回 False（无效值）。
+    仅当 window_id > 0 时执行，避免 window_id=0 时创建新窗口或干扰其他 WT 窗口。
     """
-    if tab_index < 0 or window_id < 0:
+    if tab_index < 0 or window_id <= 0:
         return False
     wt_exe = _find_wt_exe()
     if not wt_exe:
         logger.debug("wt.exe not found, skip tab focus")
         return False
     try:
-        if window_id > 0:
-            args = [wt_exe, "--window", str(window_id), "focus-tab", "--target", str(tab_index)]
-        else:
-            args = [wt_exe, "focus-tab", "--target", str(tab_index)]
+        args = [wt_exe, "--window", str(window_id), "focus-tab", "--target", str(tab_index)]
         result = subprocess.run(
             args,
             check=False,
