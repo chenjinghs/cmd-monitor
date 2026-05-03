@@ -413,7 +413,9 @@ def inject_text_unicode(text: str) -> bool:
     for ch in text:
         code = ord(ch)
         _send_unicode_char(code, key_down=True)
+        time.sleep(0.01)
         _send_unicode_char(code, key_down=False)
+        time.sleep(0.01)
     return True
 
 
