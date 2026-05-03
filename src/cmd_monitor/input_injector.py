@@ -439,7 +439,10 @@ def _set_clipboard_text(text: str) -> bool:
         ptr = kernel32.GlobalLock(h)
         ctypes.memmove(ptr, data, len(data))
         kernel32.GlobalUnlock(h)
-        user32.SetClipboardData(CF_UNICODETEXT, h)
+        result = user32.SetClipboardData(CF_UNICODETEXT, h)
+        if not result:
+            logger.error("SetClipboardData failed")
+            return False
         logger.debug("Clipboard set: %d bytes", len(data))
         return True
     finally:
