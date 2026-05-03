@@ -207,7 +207,7 @@ def test_inject_text_fallback_when_not_foreground(mock_fg: MagicMock) -> None:
     assert result is True
 
 
-@patch("cmd_monitor.input_injector._set_clipboard_text")
+@patch("cmd_monitor.input_injector.inject_text_unicode")
 @patch("cmd_monitor.input_injector.force_foreground")
 @patch("cmd_monitor.input_injector._send_key")
 @patch("cmd_monitor.input_injector.time")
@@ -215,16 +215,15 @@ def test_inject_text_success(
     mock_time: MagicMock,
     mock_send_key: MagicMock,
     mock_fg: MagicMock,
-    mock_clipboard: MagicMock,
+    mock_unicode: MagicMock,
 ) -> None:
-    """成功注入文本（剪贴板 + Ctrl+V）"""
+    """成功注入文本（KEYEVENTF_UNICODE）"""
     mock_fg.return_value = True
-    mock_clipboard.return_value = True
     result = inject_text(12345, "hello world", inject_delay=0.01)
     assert result is True
-    mock_clipboard.assert_called_once_with("hello world")
-    # Ctrl+V: Ctrl down, V down, V up, Ctrl up + Enter down, Enter up = 6 calls
-    assert mock_send_key.call_count == 6
+    mock_unicode.assert_called_once_with("hello world")
+    # Enter down, Enter up = 2 calls
+    assert mock_send_key.call_count == 2
 
 
 # --- _ensure_paste_ready Tests ---

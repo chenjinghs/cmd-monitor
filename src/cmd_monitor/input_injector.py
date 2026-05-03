@@ -566,21 +566,14 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
 
     if focus_hwnd != 0 and focus_hwnd != hwnd:
         logger.warning(
-            "Focus mismatch (focus=%s != target=%s), paste may go to wrong window",
+            "Focus mismatch (focus=%s != target=%s), input may go to wrong window",
             focus_hwnd, hwnd,
         )
 
-    # 剪贴板 + Ctrl+V：Windows Terminal 对此支持最可靠。
-    # KEYEVENTF_UNICODE 在 WinUI3/WT 中字符经常丢失，故改用粘贴。
-    logger.info("Pasting from clipboard (%d chars)", len(text))
-    rc_ctrl_dn = _send_key(VK_CONTROL, True)
-    rc_v_dn = _send_key(VK_V, True)
-    rc_v_up = _send_key(VK_V, False)
-    rc_ctrl_up = _send_key(VK_CONTROL, False)
-    logger.debug(
-        "SendInput paste keys: Ctrl_dn=%s V_dn=%s V_up=%s Ctrl_up=%s",
-        rc_ctrl_dn, rc_v_dn, rc_v_up, rc_ctrl_up,
-    )
+    # KEYEVENTF_UNICODE 逐字符输入（不经过剪贴板）。
+    # 实测在 WinUI3/WT 中 KEYEVENTF_UNICODE 能工作，而 Ctrl+V 粘贴不生效。
+    logger.info("Typing text via KEYEVENTF_UNICODE (%d chars)", len(text))
+    inject_text_unicode(text)
 
     time.sleep(0.1)
 
