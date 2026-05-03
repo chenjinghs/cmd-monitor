@@ -74,6 +74,8 @@ class FLASHWINFO(ctypes.Structure):
 
 user32.FlashWindowEx.argtypes = [ctypes.POINTER(FLASHWINFO)]
 user32.FlashWindowEx.restype = ctypes.wintypes.BOOL
+user32.MessageBeep.argtypes = [ctypes.wintypes.UINT]
+user32.MessageBeep.restype = ctypes.wintypes.BOOL
 
 FLASHW_ALL = 0x00000003
 FLASHW_TIMERNOFG = 0x0000000C
@@ -287,7 +289,7 @@ def _alt_key_trick(hwnd: int) -> None:
 
 
 def _flash_window_taskbar(hwnd: int) -> None:
-    """所有策略失败后闪烁任务栏图标，提醒用户手动切窗。"""
+    """所有策略失败后闪烁任务栏图标并播放提示音，提醒用户手动切窗。"""
     try:
         fi = FLASHWINFO()
         fi.cbSize = ctypes.sizeof(FLASHWINFO)
@@ -296,7 +298,9 @@ def _flash_window_taskbar(hwnd: int) -> None:
         fi.uCount = 5
         fi.dwTimeout = 0
         user32.FlashWindowEx(ctypes.byref(fi))
-        logger.info("Flashed window taskbar to notify user")
+        # 0x00000030 = MB_ICONEXCLAMATION，在 UIPI 限制下也能发声
+        user32.MessageBeep(0x00000030)
+        logger.info("Flashed window taskbar + beep to notify user")
     except Exception:
         pass
 
@@ -470,17 +474,26 @@ def _ensure_paste_ready(hwnd: int, user_wait_seconds: float = 2.0, skip_foregrou
         return fg
 
     if skip_foreground:
-        # 调用方已处理 foreground，UIPI 环境下 GetForegroundWindow 可能返回 NULL，
-        # 只要目标窗口可见就直接继续，避免无意义的 force_foreground 重试。
         is_visible = bool(user32.IsWindowVisible(hwnd))
-        log_fn = logger.warning if not is_visible else logger.info
-        log_fn(
-            "skip_foreground=True, bypassing foreground check for hwnd=%s (fg=%s, visible=%s)",
-            hwnd,
-            fg,
-            is_visible,
-        )
-        time.sleep(0.05)
+        if not is_visible:
+            logger.warning(
+                "skip_foreground=True, bypassing foreground check for hwnd=%s (fg=%s, visible=%s)",
+                hwnd,
+                fg,
+                is_visible,
+            )
+            time.sleep(0.05)
+            return fg
+        # UIPI 环境下 GetForegroundWindow 返回 NULL，窗口可见但前台状态未知。
+        # 给更多时间让用户手动切换窗口（如果 taskbar flash 提醒触发了手动切窗）。
+        if not fg:
+            logger.info(
+                "UIPI: fg unknown for hwnd=%s, waiting 1.5s for user to switch...",
+                hwnd,
+            )
+            time.sleep(1.5)
+        else:
+            time.sleep(0.05)
         return fg
 
     logger.warning(
@@ -545,24 +558,25 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
         fg_before, focus_hwnd, focus_cls, focus_title, hwnd, target_cls, target_title,
     )
 
-    if focus_hwnd == 0:
-        # UIPI 限制下没有焦点窗口，SendInput 会被丢弃。
-        # 改用 PostMessage 直接发送 WM_CHAR 到目标窗口。
-        logger.info("No focus window, using PostMessage WM_CHAR fallback")
-        for ch in text:
-            user32.PostMessageW(hwnd, 0x0102, ord(ch), 0)
-        user32.PostMessageW(hwnd, 0x0100, 0x0D, 0)  # WM_KEYDOWN VK_RETURN
-        user32.PostMessageW(hwnd, 0x0101, 0x0D, 0)  # WM_KEYUP   VK_RETURN
-    else:
-        # KEYEVENTF_UNICODE 直接打字,规避剪贴板在远程桌面/某些终端的兼容问题
-        logger.info("Typing text via KEYEVENTF_UNICODE (%d chars)", len(text))
-        inject_text_unicode(text)
+    if focus_hwnd != 0 and focus_hwnd != hwnd:
+        logger.warning(
+            "Focus mismatch (focus=%s != target=%s), paste may go to wrong window",
+            focus_hwnd, hwnd,
+        )
 
-        time.sleep(0.1)
+    # 剪贴板 + Ctrl+V：Windows Terminal 对此支持最可靠。
+    # KEYEVENTF_UNICODE 在 WinUI3/WT 中字符经常丢失，故改用粘贴。
+    logger.info("Pasting from clipboard (%d chars)", len(text))
+    _send_key(VK_CONTROL, True)
+    _send_key(VK_V, True)
+    _send_key(VK_V, False)
+    _send_key(VK_CONTROL, False)
 
-        # Enter 执行
-        _send_key(0x0D, key_down=True)  # VK_RETURN
-        _send_key(0x0D, key_down=False)
+    time.sleep(0.1)
+
+    # Enter 执行
+    _send_key(0x0D, key_down=True)
+    _send_key(0x0D, key_down=False)
 
     time.sleep(inject_delay)
     logger.info(

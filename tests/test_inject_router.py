@@ -10,14 +10,19 @@ from cmd_monitor.session_registry import SessionInfo
 
 
 @patch("cmd_monitor.inject_router._find_wt_exe")
-def test_focus_wt_tab_window_id_zero_returns_false(mock_find_wt: MagicMock) -> None:
-    """window_id=0 时直接返回 False，不调用 wt.exe"""
+@patch("cmd_monitor.inject_router.subprocess.run")
+def test_focus_wt_tab_window_id_zero_omits_window_arg(
+    mock_run: MagicMock, mock_find_wt: MagicMock
+) -> None:
+    """window_id=0 时不附加 --window 参数，作用于当前 WT 窗口"""
     mock_find_wt.return_value = "wt.exe"
+    mock_run.return_value = MagicMock(returncode=0, stderr=b"")
 
-    result = _focus_wt_tab(window_id=0, tab_index=2)
+    _focus_wt_tab(window_id=0, tab_index=2)
 
-    assert result is False
-    mock_find_wt.assert_not_called()
+    args = mock_run.call_args[0][0]
+    assert args == ["wt.exe", "focus-tab", "--target", "2"]
+    assert "--window" not in args
 
 
 def test_focus_wt_tab_window_id_negative_returns_false() -> None:

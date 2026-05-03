@@ -147,18 +147,20 @@ def _find_wt_exe() -> Optional[str]:
 def _focus_wt_tab(window_id: int, tab_index: int) -> bool:
     """调用 wt.exe focus-tab --target <idx>。
 
-    仅当 window_id > 0 时执行，避免 window_id=0 时切到错误窗口或创建新窗口。
+    window_id > 0 时附加 --window；window_id <= 0 时不附加，作用于当前 WT 窗口。
+    window_id < 0 直接返回 False（无效值）。
     """
-    if tab_index < 0 or window_id <= 0:
+    if tab_index < 0 or window_id < 0:
         return False
     wt_exe = _find_wt_exe()
     if not wt_exe:
         logger.debug("wt.exe not found, skip tab focus")
         return False
     try:
-        args = [wt_exe, "focus-tab", "--target", str(tab_index)]
         if window_id > 0:
             args = [wt_exe, "--window", str(window_id), "focus-tab", "--target", str(tab_index)]
+        else:
+            args = [wt_exe, "focus-tab", "--target", str(tab_index)]
         result = subprocess.run(
             args,
             check=False,
@@ -221,11 +223,13 @@ def inject_to_session(
                 "wt_tab_index=-1 for session %s — cannot switch tab, will inject to current foreground tab",
                 info.session_id[:8],
             )
-        force_foreground(info.wt_window_hwnd, flash_on_failure=False)
-        # WT 切 tab 后用鼠标点击确保 terminal pane 获得键盘焦点
+        force_foreground(info.wt_window_hwnd, flash_on_failure=True)
         time.sleep(0.3)
-        _click_window_center(info.wt_window_hwnd)
-        time.sleep(0.2)
+        # 仅在成功切换 tab 后点击窗口中心，确保 terminal pane 获得焦点；
+        # 避免在 tab 未切换时误点，把焦点从 terminal pane 移到其他控件上。
+        if tab_switched:
+            _click_window_center(info.wt_window_hwnd)
+            time.sleep(0.2)
         logger.info(
             "Injecting to wt_window_hwnd=%s (tab_switched=%s)",
             info.wt_window_hwnd,
