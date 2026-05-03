@@ -381,14 +381,14 @@ def force_foreground(hwnd: int, flash_on_failure: bool = True) -> bool:
 # --- Clipboard + SendInput Paste ---
 
 
-def _send_key(vk: int, key_down: bool = True) -> None:
-    """发送单个按键"""
+def _send_key(vk: int, key_down: bool = True) -> int:
+    """发送单个按键，返回 SendInput 注入的事件数（0 表示失败）。"""
     inp = INPUT()
     inp.type = INPUT_KEYBOARD
     inp.union.ki.wVk = vk
     if not key_down:
         inp.union.ki.dwFlags = KEYEVENTF_KEYUP
-    user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    return user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
 
 def _send_unicode_char(code: int, key_down: bool = True) -> None:
@@ -438,6 +438,7 @@ def _set_clipboard_text(text: str) -> bool:
         ctypes.memmove(ptr, data, len(data))
         kernel32.GlobalUnlock(h)
         user32.SetClipboardData(CF_UNICODETEXT, h)
+        logger.debug("Clipboard set: %d bytes", len(data))
         return True
     finally:
         user32.CloseClipboard()
@@ -567,16 +568,21 @@ def inject_text(hwnd: int, text: str, inject_delay: float = 0.5, skip_foreground
     # 剪贴板 + Ctrl+V：Windows Terminal 对此支持最可靠。
     # KEYEVENTF_UNICODE 在 WinUI3/WT 中字符经常丢失，故改用粘贴。
     logger.info("Pasting from clipboard (%d chars)", len(text))
-    _send_key(VK_CONTROL, True)
-    _send_key(VK_V, True)
-    _send_key(VK_V, False)
-    _send_key(VK_CONTROL, False)
+    rc_ctrl_dn = _send_key(VK_CONTROL, True)
+    rc_v_dn = _send_key(VK_V, True)
+    rc_v_up = _send_key(VK_V, False)
+    rc_ctrl_up = _send_key(VK_CONTROL, False)
+    logger.debug(
+        "SendInput paste keys: Ctrl_dn=%s V_dn=%s V_up=%s Ctrl_up=%s",
+        rc_ctrl_dn, rc_v_dn, rc_v_up, rc_ctrl_up,
+    )
 
     time.sleep(0.1)
 
     # Enter 执行
-    _send_key(0x0D, key_down=True)
-    _send_key(0x0D, key_down=False)
+    rc_enter_dn = _send_key(0x0D, key_down=True)
+    rc_enter_up = _send_key(0x0D, key_down=False)
+    logger.debug("SendInput Enter: down=%s up=%s", rc_enter_dn, rc_enter_up)
 
     time.sleep(inject_delay)
     logger.info(

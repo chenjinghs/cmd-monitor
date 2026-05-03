@@ -244,10 +244,6 @@ def inject_to_session(
             return False
         return inject_text(info.window_hwnd, text, inject_delay=inject_delay)
 
-    # 独立 conhost 窗口
-    if info.window_hwnd:
-        return inject_text(info.window_hwnd, text, inject_delay=inject_delay)
-
     # 退化:按标题模糊查
     if fallback_title:
         win = find_first_window(fallback_title)
